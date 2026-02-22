@@ -69,6 +69,7 @@ flash: compile
 	@arduino-cli upload \
 		--fqbn "$(FQBN)" \
 		--port "$(PORT)" \
+		--input-dir "$(BUILD_DIR)" \
 		firmware/esp32_led
 
 ota: compile
