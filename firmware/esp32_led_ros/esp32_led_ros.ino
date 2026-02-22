@@ -1,10 +1,13 @@
 /**
  * ESP32-CAM-MB — LED control via MQTT, with OTA updates
  *
- * Connects to WiFi, subscribes to /led/command via MQTT,
- * and toggles the onboard red LED (GPIO 33) based on payload.
+ * Connects to WiFi and subscribes to a MAC-based MQTT topic:
+ *   devices/<mac>/led/command
  *
  * Payload: "true" or "1" → LED on, "false" or "0" → LED off
+ *
+ * Publishes a retained device announcement on connect so the
+ * dashboard auto-discovers the topic.
  *
  * After first USB flash, use `make ota` for subsequent updates.
  *
@@ -28,11 +31,14 @@
 #define WIFI_PASS "your_wifi_password"
 #endif
 #ifndef MQTT_IP
-#define MQTT_IP "192.168.1.1"  // run `make mqtt` to see your IP
+#define MQTT_IP "broker.hivemq.com"  // public cloud broker — no setup needed
 #endif
 
 const int MQTT_PORT = 1883;
 const int LED_PIN   = 33;  // red LED on ESP32-CAM-MB (active low)
+
+String topicCmd;  // devices/<mac>/led/command
+String topicAnn;  // devices/<mac>
 
 WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
@@ -41,7 +47,7 @@ void onMessage(char* topic, byte* payload, unsigned int length) {
   String msg;
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
 
-  if (strcmp(topic, "/led/command") == 0) {
+  if (strcmp(topic, topicCmd.c_str()) == 0) {
     bool on = (msg == "true" || msg == "1");
     digitalWrite(LED_PIN, on ? LOW : HIGH);  // LOW = on
     Serial.println(on ? "LED on" : "LED off");
@@ -67,6 +73,14 @@ void setup() {
   }
   Serial.println("\nWiFi connected: " + WiFi.localIP().toString());
 
+  // Build unique topic prefix from MAC address (e.g. "d4e9f4a2a044")
+  String mac = WiFi.macAddress();
+  mac.toLowerCase();
+  mac.replace(":", "");
+  topicCmd = "devices/" + mac + "/led/command";
+  topicAnn = "devices/" + mac;
+  Serial.println("Topic: " + topicCmd);
+
   ArduinoOTA.setHostname("esp32-led");
   ArduinoOTA.onStart([]() {
     mqttClient.disconnect();  // free up WiFi bandwidth for OTA
@@ -89,10 +103,12 @@ void loop() {
     if (now - lastReconnectMs >= RECONNECT_INTERVAL) {
       lastReconnectMs = now;
       Serial.print("Connecting to MQTT...");
-      if (mqttClient.connect("esp32-led")) {
+      String clientId = "esp32-" + topicAnn.substring(8);  // esp32-<mac>
+      if (mqttClient.connect(clientId.c_str())) {
         Serial.println(" connected");
-        mqttClient.publish("devices/esp32-led", "{\"topics\":[\"/led/command\"]}", true);
-        mqttClient.subscribe("/led/command");
+        String announcement = "{\"topics\":[\"" + topicCmd + "\"]}";
+        mqttClient.publish(topicAnn.c_str(), announcement.c_str(), true);
+        mqttClient.subscribe(topicCmd.c_str());
       } else {
         Serial.print(" failed, rc=");
         Serial.println(mqttClient.state());

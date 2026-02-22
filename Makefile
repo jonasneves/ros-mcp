@@ -4,7 +4,7 @@
 
 FQBN      ?= esp32:esp32:esp32cam:PartitionScheme=default
 PORT      ?= $(shell ls /dev/cu.usbserial-* 2>/dev/null | head -1)
-MQTT_IP   ?= $(shell ipconfig getifaddr en0)
+MQTT_IP   ?= broker.hivemq.com
 ESP32_IP  ?=
 BUILD_DIR := /tmp/esp32-led-build
 ESPOTA    := $(shell find ~/Library/Arduino15/packages/esp32 -name espota.py 2>/dev/null | sort -V | tail -1)
@@ -19,7 +19,7 @@ help:
 	@echo "  \033[36msetup\033[0m          Install host dependencies (run once per machine)"
 	@echo ""
 	@echo "Dev"
-	@echo "  \033[36mmqtt\033[0m           Start Mosquitto broker (MQTT: 1883, WebSocket: 9001)"
+	@echo "  \033[36mmqtt\033[0m           Start local Mosquitto broker (optional — cloud broker used by default)"
 	@echo "  \033[36mpreview\033[0m        Serve dashboard at http://localhost:8080"
 	@echo ""
 	@echo "Firmware"
@@ -45,9 +45,10 @@ setup:
 	@echo "System Preferences > Privacy & Security. Do that before running make flash."
 
 mqtt:
-	@echo "MQTT broker: mqtt://localhost:1883"
-	@echo "WebSocket:   ws://localhost:9001"
-	@echo "Your IP:     $$(ipconfig getifaddr en0)"
+	@echo "Local MQTT broker: mqtt://localhost:1883"
+	@echo "Local WebSocket:   ws://localhost:9001"
+	@echo "To use locally, set in config.mk:"
+	@echo "  MQTT_IP = $$(ipconfig getifaddr en0)"
 	@echo ""
 	docker compose -f docker/docker-compose.yml up mqtt
 

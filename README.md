@@ -4,13 +4,14 @@ Browser dashboard for controlling physical robots with AI. The AI chat calls Cla
 
 ## Architecture
 
-The browser runs everything: MQTT.js connects to a Mosquitto broker over WebSocket. Claude is called directly from the browser with MQTT tool definitions, and when Claude responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes to the same broker over TCP.
+The browser runs everything: MQTT.js connects to a broker over WebSocket. Claude is called directly from the browser with MQTT tool definitions, and when Claude responds with a tool call, the dashboard publishes to the broker. The ESP32 subscribes to the same broker over TCP.
+
+By default both sides connect to a public cloud broker — no Docker or local setup needed.
 
 ![Architecture and sequence diagrams](diagrams.jpg)
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) — for Mosquitto
 - [Homebrew](https://brew.sh/) — to install host dependencies
 - Anthropic API key — for the AI chat
 
@@ -28,33 +29,23 @@ cp config.mk.example config.mk
 ```
 Edit `config.mk` with your WiFi SSID and password.
 
-**3. Start MQTT broker**
-```bash
-make mqtt
-```
-Note the IP it prints — that's your `MQTT_IP` (auto-detected from `en0`).
-
-**4. Flash firmware** (first time, via USB)
+**3. Flash firmware** (first time, via USB)
 ```bash
 make flash
 ```
-After boot, the ESP32 prints its IP. Add it to `config.mk` as `ESP32_IP` to enable OTA.
+After boot, the ESP32 prints its unique topic (e.g. `devices/d4e9f4a2a044/led/command`) and its local IP. Add the IP to `config.mk` as `ESP32_IP` to enable OTA updates.
 
-**5. Open the dashboard**
-```bash
-make preview
-```
-Go to [http://localhost:8080](http://localhost:8080) and connect to `ws://localhost:9001`.
+**4. Open the dashboard**
 
-Or use the hosted version at [neevs.io/ros](https://neevs.io/ros).
+Go to [neevs.io/mqtt-ai](https://neevs.io/mqtt-ai) and click **Connect** — it defaults to the public HiveMQ broker, the same one the ESP32 connects to. Topics appear automatically.
 
-**6. Control your robot**
+**5. Control your robot**
 
 Browse topics and publish manually, or open the AI chat panel, enter your Anthropic API key, and describe what you want the robot to do.
 
 ## OTA updates
 
-After the first USB flash, subsequent firmware updates can go over WiFi:
+After the first USB flash, subsequent firmware updates go over WiFi:
 
 ```bash
 make ota
@@ -62,18 +53,33 @@ make ota
 
 Requires `ESP32_IP` set in `config.mk` (printed by the ESP32 on boot).
 
+## Local broker (optional)
+
+For offline use or private data, run a local Mosquitto broker:
+
+```bash
+make mqtt
+```
+
+Then set in `config.mk`:
+```
+MQTT_IP = <your local IP>
+```
+
+And connect the dashboard to `ws://<your local IP>:9001`.
+
 ## Repo structure
 
 ```
 dashboard/   Static web app — AI chat (Claude API) + MQTT topic browser
-docker/      Mosquitto MQTT broker config (MQTT: 1883, WebSocket: 9001)
+docker/      Mosquitto config for local broker (optional)
 firmware/    ESP32 Arduino sketch — LED control via MQTT, OTA support
 Makefile     make setup    — install host dependencies (once per machine)
-             make mqtt     — start Mosquitto broker
-             make preview  — serve dashboard at http://localhost:8080
              make flash    — compile and upload firmware over USB (first time)
              make ota      — upload firmware over WiFi (requires ESP32_IP)
              make monitor  — open serial console
+             make mqtt     — start local Mosquitto broker (optional)
+             make preview  — serve dashboard at http://localhost:8080
 ```
 
 ## Notes
