@@ -62,14 +62,14 @@ compile:
 		--fqbn "$(FQBN)" \
 		--build-property $(BUILD_FLAGS) \
 		--build-path "$(BUILD_DIR)" \
-		firmware/esp32_led_ros
+		firmware/esp32_led
 
 flash: compile
 	@echo "Uploading over USB..."
 	@arduino-cli upload \
 		--fqbn "$(FQBN)" \
 		--port "$(PORT)" \
-		firmware/esp32_led_ros
+		firmware/esp32_led
 
 ota: compile
 	@test -n "$(ESP32_IP)" || (echo "Error: set ESP32_IP in config.mk (shown in Serial Monitor after boot)"; exit 1)

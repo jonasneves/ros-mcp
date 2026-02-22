@@ -607,7 +607,7 @@ const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        topic:   { type: "string", description: "MQTT topic, e.g. /led/command" },
+        topic:   { type: "string", description: "MQTT topic, e.g. devices/d4e9f4a2a044/led/command" },
         timeout: { type: "number", description: "Timeout in seconds (default 5)", default: 5 },
       },
       required: ["topic"],
