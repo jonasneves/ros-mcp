@@ -5,15 +5,30 @@
 FQBN ?= esp32:esp32:esp32cam
 PORT ?= /dev/cu.usbserial-XXXXXXXX
 
-.PHONY: help rosbridge flash
+.PHONY: help setup rosbridge flash
 
 help:
 	@echo "Usage: make <target>"
 	@echo ""
+	@echo "  setup       Install host dependencies (run once on a new machine)"
 	@echo "  rosbridge   Start rosbridge WebSocket server (port 9090)"
 	@echo "  flash       Compile and upload ESP32 firmware"
 	@echo ""
 	@echo "Configure WiFi and IP in config.mk (copy from config.mk.example)"
+
+setup:
+	@echo "Installing host dependencies..."
+	@echo ""
+	@echo "1/2 Installing CP210x USB driver (enables ESP32 USB connection)..."
+	brew install --cask silicon-labs-vcp-driver
+	@echo ""
+	@echo "2/2 Installing arduino-cli (for firmware compilation and upload)..."
+	brew install arduino-cli
+	arduino-cli core update-index
+	arduino-cli core install esp32:esp32
+	@echo ""
+	@echo "Done. After install, macOS may prompt you to allow the driver in"
+	@echo "System Preferences > Privacy & Security. Do that before running make flash."
 
 rosbridge:
 	@echo "Rosbridge: ws://localhost:9090"

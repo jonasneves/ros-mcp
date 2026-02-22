@@ -13,35 +13,55 @@ The only thing that needs to run locally is rosbridge (via Docker), which bridge
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) — for rosbridge
-- [arduino-cli](https://arduino.github.io/arduino-cli/) — for flashing firmware
+- [Homebrew](https://brew.sh/) — to install host dependencies
 - Anthropic API key — for the AI chat
+
+## Host vs Docker split
+
+USB and firmware flashing run on your host machine. Rosbridge runs in Docker. They're kept separate intentionally:
+
+```
+Host machine (macOS)
+  ├── CP210x driver       ← kernel extension, talks to USB hardware
+  ├── arduino-cli         ← compiles and uploads firmware over USB
+  └── Docker
+        └── rosbridge     ← bridges WebSocket to ROS network over WiFi
+```
+
+`make setup` installs the host-side dependencies. Docker handles everything else.
 
 ## Quickstart
 
-**1. Start rosbridge**
+**1. Install host dependencies** (once per machine)
+```bash
+make setup
+```
+After install, macOS will prompt you to allow the CP210x driver in **System Preferences > Privacy & Security**. Do that before proceeding.
+
+**2. Start rosbridge**
 ```bash
 make rosbridge
 ```
 Note the IP it prints — you'll need it in the next step.
 
-**2. Configure credentials** (first time only)
+**3. Configure credentials** (first time only)
 
 ```bash
 cp config.mk.example config.mk
 ```
 
-Edit `config.mk` with your WiFi credentials, the IP from step 1, and your ESP32 USB port.
+Edit `config.mk` with your WiFi credentials, the IP from step 2, and your ESP32 USB port.
 
-**3. Flash firmware** (first time only)
+**4. Flash firmware** (first time only)
 ```bash
 make flash
 ```
 
-**4. Open the dashboard**
+**5. Open the dashboard**
 
 Go to [neevs.io/ros](https://neevs.io/ros) and connect to `ws://localhost:9090`.
 
-**5. Control your robot**
+**6. Control your robot**
 
 Browse topics and publish manually, or open the AI chat panel, enter your Anthropic API key, and describe what you want the robot to do.
 
@@ -51,7 +71,8 @@ Browse topics and publish manually, or open the AI chat panel, enter your Anthro
 dashboard/   Static web app — AI chat (Claude API) + ROS topic/node/service browser
 docker/      Minimal rosbridge Docker setup (rosbridge + rosapi, no simulation)
 firmware/    ESP32 Arduino sketch + flash script
-Makefile     make rosbridge — start rosbridge
+Makefile     make setup     — install host dependencies (once per machine)
+             make rosbridge — start rosbridge
              make flash     — compile and upload ESP32 firmware
 ```
 
