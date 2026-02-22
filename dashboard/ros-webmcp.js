@@ -266,7 +266,7 @@ function renderList(containerId, items, kind) {
     return;
   }
 
-  filtered.forEach(name => {
+  for (const name of filtered) {
     const isActive = state.selected?.kind === kind && state.selected?.name === name;
     const btn = document.createElement("button");
     btn.className = "sidebar-item" + (isActive ? " active" : "");
@@ -292,7 +292,7 @@ function renderList(containerId, items, kind) {
     } else {
       container.appendChild(btn);
     }
-  });
+  }
 }
 
 // ── Entity selection ──────────────────────────────────────────────────────────
@@ -428,13 +428,13 @@ function renderPublishHistory(topic) {
   const hist = state.publishHistory[topic] || [];
   group.style.display = hist.length ? "" : "none";
   sel.innerHTML = `<option value="">— History —</option>`;
-  hist.forEach(entry => {
+  for (const entry of hist) {
     const opt = document.createElement("option");
     opt.value = entry;
     const label = entry.replace(/\s+/g, " ");
     opt.textContent = label.length > 50 ? label.slice(0, 50) + "…" : label;
     sel.appendChild(opt);
-  });
+  }
 }
 
 // ── Continuous publish ────────────────────────────────────────────────────────
@@ -594,7 +594,7 @@ function renderPinnedRow() {
   row.hidden = !pinned.length;
   row.innerHTML = "";
 
-  pinned.forEach(([topic, entry]) => {
+  for (const [topic, entry] of pinned) {
     const isPose = isPoseTopic(entry.msgType);
     const card = document.createElement("div");
     card.className = "watch-card";
@@ -615,7 +615,7 @@ function renderPinnedRow() {
     row.appendChild(card);
 
     if (isPose && entry.lastMsg) renderPoseCanvas(topic);
-  });
+  }
 }
 
 function updateWatchCard(topic) {
@@ -682,10 +682,10 @@ function renderPoseCanvas(topic) {
   if (!allPts.length) return;
 
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  allPts.forEach(p => {
+  for (const p of allPts) {
     minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
     minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
-  });
+  }
 
   const pad = Math.max(maxX - minX, maxY - minY, 0.5) * 0.2;
   const wx0 = minX - pad, wx1 = maxX + pad;
@@ -1910,13 +1910,13 @@ document.getElementById("sidebar-filter").addEventListener("input", (e) => {
   renderSidebar();
 });
 
-document.querySelectorAll("[data-section]").forEach(btn => {
+for (const btn of document.querySelectorAll("[data-section]")) {
   btn.addEventListener("click", () => {
     const section = btn.dataset.section;
     state.sidebarCollapsed[section] = !state.sidebarCollapsed[section];
     renderSidebar();
   });
-});
+}
 
 function initSysFilterBtn(btnId, stateKey) {
   document.getElementById(btnId).addEventListener("click", () => {
@@ -1949,7 +1949,7 @@ document.getElementById("log-toggle").addEventListener("click", () => {
   if (willExpand) {
     const list = document.getElementById("tool-log-list");
     list.innerHTML = "";
-    state.toolLog.forEach(entry => list.appendChild(createLogEntryEl(entry)));
+    for (const entry of state.toolLog) list.appendChild(createLogEntryEl(entry));
   }
 });
 
@@ -1987,7 +1987,7 @@ document.getElementById("webmcp-badge").addEventListener("click", () => {
   divider.textContent = "Tools";
   popover.appendChild(divider);
 
-  TOOLS.forEach(tool => {
+  for (const tool of TOOLS) {
     const item = document.createElement("div");
     item.className = "webmcp-popover-item";
     item.innerHTML = `
@@ -1995,7 +1995,7 @@ document.getElementById("webmcp-badge").addEventListener("click", () => {
       <div class="webmcp-popover-desc">${escHtml(tool.description)}</div>
     `;
     popover.appendChild(item);
-  });
+  }
 
   popover.hidden = false;
 });
