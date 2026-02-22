@@ -5,7 +5,7 @@
 const state = {
   mqttClient: null,
   connected: false,
-  url: "ws://localhost:9001",
+  url: "ws://broker.hivemq.com:8000/mqtt",
   seenTopics: [],           // topics seen via '#' subscription
   watching: null,           // topic name currently being live-watched
   topicListeners: {},       // topic -> Set<callback> for persistent listeners

@@ -75,7 +75,7 @@ ota: compile
 	@test -n "$(ESP32_IP)" || (echo "Error: set ESP32_IP in config.mk (shown in Serial Monitor after boot)"; exit 1)
 	@test -n "$(ESPOTA)"   || (echo "Error: espota.py not found — run make setup"; exit 1)
 	@echo "Uploading over WiFi to $(ESP32_IP)..."
-	@python3 "$(ESPOTA)" -i "$(ESP32_IP)" -f "$(BUILD_DIR)/esp32_led_ros.ino.bin"
+	@python3 "$(ESPOTA)" -i "$(ESP32_IP)" -f "$(BUILD_DIR)/esp32_led.ino.bin"
 
 monitor:
 	arduino-cli monitor --port "$(PORT)" --config baudrate=115200,dtr=off,rts=off
