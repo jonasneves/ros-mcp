@@ -127,7 +127,9 @@ function connect(url) {
 
 function updateStatusDot(connected, error) {
   const dot = document.getElementById("status-dot");
-  const modifier = connected ? " connected" : error ? " error" : "";
+  let modifier = "";
+  if (connected) modifier = " connected";
+  else if (error) modifier = " error";
   dot.className = "status-dot" + modifier;
 }
 
