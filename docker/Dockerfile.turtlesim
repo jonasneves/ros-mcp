@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+FROM ros:jazzy-ros-base
+
+ENV ROS_DISTRO=jazzy
+SHELL ["/bin/bash", "-c"]
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
+    ros-jazzy-turtlesim \
+    ros-jazzy-rosbridge-suite \
+    ros-jazzy-rmw-cyclonedds-cpp \
+    xvfb \
+    x11vnc \
+    novnc \
+    python3-websockify
+
+RUN echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
+
+COPY cyclonedds.xml /cyclonedds.xml
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /ros2_ws
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/bin/bash"]

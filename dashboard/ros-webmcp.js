@@ -1,0 +1,2638 @@
+// ── State ────────────────────────────────────────────────────────────────────
+
+const state = {
+  ros: null,
+  connected: false,
+  url: "ws://localhost:9090",
+  topics: [],
+  topicTypes: {},         // topic -> type string
+  nodes: [],
+  services: [],
+  selected: null,         // { kind: "topic"|"node"|"service", name: string }
+  watching: null,         // active ROSLIB.Topic subscription for watch mode
+  filter: "",             // sidebar substring filter
+  publishHistory: {},     // topic -> string[] (max 10, newest first)
+  continuousPublish: null,// { timer, rosTopic } | null
+  pinnedTopics: {},       // topic -> { msgType, sub, lastMsg, trail[] }
+  toolLog: [],            // { id, toolName, params, result, ts, durationMs }[]
+  reconnect: null,        // { attempts, timer } | null
+  sidebarCollapsed: { topics: false, nodes: false, services: false },
+  hideSystemServices: false,
+  hideSystemNodes: false,
+};
+
+let _toolLogId = 0;
+
+const mcpState = {
+  url: localStorage.getItem("webmcp-mcp-url") || "http://localhost:9000",
+};
+
+const traceLog = []; // max 200 entries
+let _traceLogId = 0;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function callRosapi(serviceName, serviceType, request) {
+  const t0 = Date.now();
+  appendTrace({ dir: "out", layer: "rosbridge", method: serviceName, body: request, ts: t0 });
+  return new Promise((resolve, reject) => {
+    if (!state.ros || !state.connected) {
+      reject(new Error("Not connected to rosbridge"));
+      return;
+    }
+    const svc = new ROSLIB.Service({ ros: state.ros, name: serviceName, serviceType });
+    const req = new ROSLIB.ServiceRequest(request);
+    svc.callService(
+      req,
+      (result) => {
+        appendTrace({ dir: "in", layer: "rosbridge", method: serviceName, body: result, durationMs: Date.now() - t0, ts: Date.now() });
+        resolve(result);
+      },
+      (err) => {
+        appendTrace({ dir: "in", layer: "rosbridge", method: serviceName, body: { error: String(err) }, durationMs: Date.now() - t0, ts: Date.now() });
+        reject(err);
+      }
+    );
+  });
+}
+
+function toast(msg, kind = "default", durationMs = 3000) {
+  const container = document.getElementById("toast-container");
+  const el = document.createElement("div");
+  el.className = `toast${kind !== "default" ? " " + kind : ""}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => el.remove(), durationMs);
+}
+
+function cssId(str) {
+  return str.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+// ── Auto-reconnect ────────────────────────────────────────────────────────────
+
+const RECONNECT_MAX = 8;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_CAP_MS = 30000;
+
+function scheduleReconnect() {
+  if (!state.reconnect) state.reconnect = { attempts: 0, timer: null };
+  if (state.reconnect.attempts >= RECONNECT_MAX) {
+    state.reconnect = null;
+    toast("Max reconnect attempts reached", "error");
+    document.getElementById("status-text").textContent = "Disconnected";
+    return;
+  }
+  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, state.reconnect.attempts), RECONNECT_CAP_MS);
+  state.reconnect.attempts++;
+  document.getElementById("status-text").textContent =
+    `Reconnecting in ${Math.round(delay / 1000)}s… (${state.reconnect.attempts}/${RECONNECT_MAX})`;
+  state.reconnect.timer = setTimeout(() => {
+    if (!state.connected) connect(state.url);
+  }, delay);
+}
+
+function cancelReconnect() {
+  if (!state.reconnect) return;
+  clearTimeout(state.reconnect.timer);
+  state.reconnect = null;
+}
+
+// ── Connection ────────────────────────────────────────────────────────────────
+
+function updateConnectBtn(connected) {
+  const btn = document.getElementById("connect-btn");
+  btn.textContent = connected ? "Disconnect" : "Connect";
+  btn.classList.toggle("btn-primary", !connected);
+  btn.classList.toggle("btn-danger-outline", connected);
+}
+
+function disconnect() {
+  cancelReconnect();
+  state.manuallyDisconnected = true;
+  if (state.ros) {
+    state.ros.close();
+    state.ros = null;
+  }
+  stopWatching();
+  state.connected = false;
+  updateStatusDot(false, false);
+  updateConnectBtn(false);
+  document.getElementById("status-text").textContent = "Disconnected";
+}
+
+function connect(url) {
+  cancelReconnect();
+  state.manuallyDisconnected = false;
+  if (state.ros) {
+    state.ros.close();
+    state.ros = null;
+  }
+  stopWatching();
+
+  state.url = url;
+  updateStatusDot(false, false, true);
+  document.getElementById("status-text").textContent = "Connecting…";
+  const ros = new ROSLIB.Ros({ url });
+  state.ros = ros;
+
+  ros.on("connection", () => {
+    cancelReconnect();
+    state.connected = true;
+    updateStatusDot(true, false);
+    updateConnectBtn(true);
+    document.getElementById("status-text").textContent = url;
+    refreshAll();
+  });
+
+  ros.on("error", (err) => {
+    state.connected = false;
+    updateStatusDot(false, true);
+    document.getElementById("status-text").textContent = "Error";
+    toast(`Connection error: ${err}`, "error");
+  });
+
+  ros.on("close", () => {
+    state.connected = false;
+    updateStatusDot(false, false);
+    updateConnectBtn(false);
+    state.topics = [];
+    state.nodes = [];
+    state.services = [];
+    state.selected = null;
+    unpinAllTopics();
+    renderSidebar();
+    renderMainPlaceholder();
+    if (!state.manuallyDisconnected) scheduleReconnect();
+  });
+}
+
+function updateStatusDot(connected, error, connecting = false) {
+  const dot = document.getElementById("status-dot");
+  let modifier = "";
+  if (connected) modifier = " connected";
+  else if (error) modifier = " error";
+  else if (connecting) modifier = " connecting";
+  dot.className = "status-dot" + modifier;
+}
+
+// ── Discovery ─────────────────────────────────────────────────────────────────
+
+async function refreshAll() {
+  await Promise.all([loadTopics(), loadNodes(), loadServices()]);
+  renderSidebar();
+  if (!state.selected) renderMainPlaceholder();
+}
+
+async function loadTopics() {
+  try {
+    const res = await callRosapi("/rosapi/topics", "rosapi/Topics", {});
+    state.topics = res.topics || [];
+    const types = res.types || [];
+    state.topicTypes = {};
+    state.topics.forEach((t, i) => { state.topicTypes[t] = types[i] || ""; });
+  } catch {
+    state.topics = [];
+  }
+}
+
+async function loadNodes() {
+  try {
+    const res = await callRosapi("/rosapi/nodes", "rosapi/Nodes", {});
+    state.nodes = res.nodes || [];
+  } catch {
+    state.nodes = [];
+  }
+}
+
+async function loadServices() {
+  try {
+    const res = await callRosapi("/rosapi/services", "rosapi/Services", {});
+    state.services = res.services || [];
+  } catch {
+    state.services = [];
+  }
+}
+
+// ── Sidebar rendering ─────────────────────────────────────────────────────────
+
+function isSystemNode(name) {
+  return name.startsWith("/rosapi") ||
+    name.startsWith("/rosbridge") ||
+    name.startsWith("/_");
+}
+
+function isSystemService(name) {
+  return name.startsWith("/rosapi/") ||
+    name.startsWith("/rosbridge_websocket/") ||
+    name.endsWith("/describe_parameters") ||
+    name.endsWith("/get_parameter_types") ||
+    name.endsWith("/get_parameters") ||
+    name.endsWith("/list_parameters") ||
+    name.endsWith("/set_parameters") ||
+    name.endsWith("/set_parameters_atomically");
+}
+
+function renderMainPlaceholder() {
+  const main = document.getElementById("main-panel");
+  if (!state.connected) {
+    const mcpHint = mcpClient.connected
+      ? `<div style="margin-top:8px;font-size:11px;color:var(--accent)">MCP: ${escHtml(mcpClient.serverInfo?.name || "server")} · ${mcpClient.tools.length} tools ready</div>`
+      : "";
+    main.innerHTML = `<div class="panel-placeholder" id="panel-placeholder"><div>Connect to rosbridge to get started.${mcpHint}</div></div>`;
+    return;
+  }
+  const nodeCount = state.hideSystemNodes
+    ? state.nodes.filter(n => !isSystemNode(n)).length
+    : state.nodes.length;
+  const svcCount = state.hideSystemServices
+    ? state.services.filter(s => !isSystemService(s)).length
+    : state.services.length;
+  const mcpBlock = mcpClient.connected
+    ? `<div class="conn-stat" style="flex-direction:row;align-items:center;gap:6px;margin-top:4px">
+        <span class="status-dot connected" style="width:7px;height:7px"></span>
+        <span style="font-size:11px;color:var(--accent-hover)">${escHtml(mcpClient.serverInfo?.name || "MCP")} · ${mcpClient.tools.length} tools</span>
+       </div>`
+    : "";
+  main.innerHTML = `
+    <div class="conn-summary">
+      <div class="conn-summary-title">Connected</div>
+      <div class="conn-url">${escHtml(state.url)}</div>
+      <div class="conn-stats">
+        <div class="conn-stat">
+          <span class="conn-stat-value">${state.topics.length}</span>
+          <span class="conn-stat-label">Topics</span>
+        </div>
+        <div class="conn-stat">
+          <span class="conn-stat-value">${nodeCount}</span>
+          <span class="conn-stat-label">Nodes</span>
+        </div>
+        <div class="conn-stat">
+          <span class="conn-stat-value">${svcCount}</span>
+          <span class="conn-stat-label">Services</span>
+        </div>
+      </div>
+      ${mcpBlock}
+      <div class="conn-hint">← select a topic, node, or service to inspect</div>
+    </div>
+  `;
+}
+
+function updateSimulatorsPopover() {
+  const popover = document.getElementById("sims-popover");
+  if (!popover) return;
+  let hostname = "localhost";
+  try { hostname = new URL(document.getElementById("url-input").value.trim().replace(/^wss?/, "http")).hostname; } catch {}
+  popover.innerHTML = SIMULATORS.map(sim => {
+    const connected = state.connected && sim.detect(state.nodes);
+    const vncUrl = `http://${hostname}:${sim.vncPort}/vnc.html`;
+    return `<div class="sim-row">
+      <span class="status-dot ${connected ? "connected" : ""}"></span>
+      <span class="sim-name">${escHtml(sim.name)}</span>
+      <a class="sim-vnc-btn" href="${escHtml(vncUrl)}" target="_blank" rel="noopener">VNC ↗</a>
+    </div>`;
+  }).join("");
+}
+
+function renderSidebar() {
+  renderList("topics-list", state.topics, "topic");
+  renderList("nodes-list", state.nodes, "node");
+  renderList("services-list", state.services, "service");
+  updateSimulatorsPopover();
+  for (const section of ["topics", "nodes", "services"]) {
+    const listEl = document.getElementById(`${section}-list`);
+    const btn = document.getElementById(`section-toggle-${section}`);
+    const chevron = btn?.parentElement?.querySelector(".sidebar-chevron");
+    if (listEl) listEl.hidden = state.sidebarCollapsed[section];
+    if (btn) btn.setAttribute("aria-expanded", String(!state.sidebarCollapsed[section]));
+    if (chevron) chevron.classList.toggle("collapsed", state.sidebarCollapsed[section]);
+  }
+}
+
+function renderList(containerId, items, kind) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = "";
+
+  let filtered = state.filter
+    ? items.filter(n => n.toLowerCase().includes(state.filter.toLowerCase()))
+    : items;
+
+  if (kind === "node" && state.hideSystemNodes) {
+    filtered = filtered.filter(n => !isSystemNode(n));
+  }
+  if (kind === "service" && state.hideSystemServices) {
+    filtered = filtered.filter(n => !isSystemService(n));
+  }
+
+  if (!filtered.length) {
+    if (!state.connected) return;
+    const el = document.createElement("div");
+    el.className = "sidebar-empty";
+    el.textContent = state.filter ? "No matches" : "None found";
+    container.appendChild(el);
+    return;
+  }
+
+  filtered.forEach(name => {
+    const isActive = state.selected?.kind === kind && state.selected?.name === name;
+
+    if (kind === "topic") {
+      const row = document.createElement("div");
+      row.className = "sidebar-item-row";
+
+      const btn = document.createElement("button");
+      btn.className = "sidebar-item" + (isActive ? " active" : "");
+      btn.textContent = name;
+      btn.title = name;
+      btn.addEventListener("click", () => selectEntity(kind, name));
+
+      const pinBtn = document.createElement("button");
+      const isPinned = !!state.pinnedTopics[name];
+      pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
+      pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
+      pinBtn.setAttribute("aria-pressed", String(isPinned));
+      pinBtn.textContent = "⊕";
+      pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(name); });
+
+      row.appendChild(btn);
+      row.appendChild(pinBtn);
+      container.appendChild(row);
+    } else {
+      const btn = document.createElement("button");
+      btn.className = "sidebar-item" + (isActive ? " active" : "");
+      btn.textContent = name;
+      btn.title = name;
+      btn.addEventListener("click", () => selectEntity(kind, name));
+      container.appendChild(btn);
+    }
+  });
+}
+
+// ── Entity selection ──────────────────────────────────────────────────────────
+
+function selectEntity(kind, name) {
+  stopWatching();
+  stopContinuousPublish();
+  state.selected = { kind, name };
+  renderSidebar();
+  if (kind === "topic") renderTopicPanel(name);
+  else if (kind === "node") renderNodePanel(name);
+  else if (kind === "service") renderServicePanel(name);
+}
+
+// ── Topic panel ────────────────────────────────────────────────────────────────
+
+function renderTopicPanel(topic) {
+  const msgType = state.topicTypes[topic] || "unknown";
+  const main = document.getElementById("main-panel");
+
+  main.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-title">${escHtml(topic)}</div>
+      <div class="detail-type">${escHtml(msgType)}</div>
+    </div>
+
+    <div>
+      <div class="section-label">Last message</div>
+      <div class="data-card empty" id="last-msg">No data yet</div>
+    </div>
+
+    <div class="controls-row">
+      <button class="btn btn-sm" id="btn-subscribe-once">Subscribe once</button>
+      <button class="btn btn-sm" id="btn-watch">Watch</button>
+      <button class="btn btn-sm" id="btn-stop-watch" style="display:none">Stop</button>
+      <span class="watch-indicator" id="watch-indicator" style="display:none">
+        <span class="watch-dot"></span> Watching
+      </span>
+    </div>
+
+    <div class="divider-label">Publish</div>
+
+    <div class="input-group" id="publish-history-group" style="display:none">
+      <label class="input-label" for="publish-history">History</label>
+      <select class="input-field" id="publish-history"></select>
+    </div>
+
+    <div class="input-group">
+      <label class="input-label" for="publish-msg">Message (JSON) <span style="color:var(--text-muted);font-weight:400">— ⌘↵ to send</span></label>
+      <textarea class="textarea-field" id="publish-msg" rows="3" placeholder='{}'></textarea>
+    </div>
+
+    <div class="controls-row">
+      <button class="btn btn-primary btn-sm" id="btn-publish">Publish</button>
+    </div>
+
+    <div class="controls-row repeat-row">
+      <label class="repeat-label">
+        <input type="checkbox" class="repeat-check" id="repeat-checkbox">
+        Repeat at
+      </label>
+      <input type="number" class="input-field hz-input" id="repeat-hz" value="1" min="0.1" max="100" step="0.1">
+      <span class="repeat-unit">Hz</span>
+    </div>
+  `;
+
+  document.getElementById("btn-subscribe-once").addEventListener("click", () =>
+    doSubscribeOnce(topic, msgType)
+  );
+  document.getElementById("btn-watch").addEventListener("click", () =>
+    startWatching(topic, msgType)
+  );
+  document.getElementById("btn-stop-watch").addEventListener("click", stopWatching);
+  document.getElementById("btn-publish").addEventListener("click", () =>
+    doPublish(topic, msgType)
+  );
+
+  // Cmd/Ctrl+Enter to publish
+  document.getElementById("publish-msg").addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      doPublish(topic, msgType);
+    }
+  });
+
+  // History select
+  document.getElementById("publish-history").addEventListener("change", (e) => {
+    if (e.target.value) {
+      document.getElementById("publish-msg").value = e.target.value;
+      e.target.value = "";
+    }
+  });
+  renderPublishHistory(topic);
+
+  // Continuous publish
+  document.getElementById("repeat-checkbox").addEventListener("change", (e) => {
+    if (e.target.checked) {
+      const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
+      startContinuousPublish(topic, msgType, hz);
+    } else {
+      stopContinuousPublish();
+    }
+  });
+  document.getElementById("repeat-hz").addEventListener("change", () => {
+    if (document.getElementById("repeat-checkbox")?.checked) {
+      const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
+      startContinuousPublish(topic, msgType, hz);
+    }
+  });
+
+  attachJsonFormatter("publish-msg");
+}
+
+// ── Publish history ───────────────────────────────────────────────────────────
+
+function pushPublishHistory(topic, jsonStr) {
+  if (!state.publishHistory[topic]) state.publishHistory[topic] = [];
+  const hist = state.publishHistory[topic];
+  const existing = hist.indexOf(jsonStr);
+  if (existing !== -1) hist.splice(existing, 1);
+  hist.unshift(jsonStr);
+  if (hist.length > 10) hist.pop();
+}
+
+function renderPublishHistory(topic) {
+  const sel = document.getElementById("publish-history");
+  const group = document.getElementById("publish-history-group");
+  if (!sel || !group) return;
+  const hist = state.publishHistory[topic] || [];
+  group.style.display = hist.length ? "" : "none";
+  sel.innerHTML = `<option value="">— History —</option>`;
+  hist.forEach(entry => {
+    const opt = document.createElement("option");
+    opt.value = entry;
+    const label = entry.replace(/\s+/g, " ");
+    opt.textContent = label.length > 50 ? label.slice(0, 50) + "…" : label;
+    sel.appendChild(opt);
+  });
+}
+
+// ── Continuous publish ────────────────────────────────────────────────────────
+
+function startContinuousPublish(topic, msgType, hz) {
+  stopContinuousPublish();
+  let lastValidMsg = {};
+  try {
+    lastValidMsg = JSON.parse(document.getElementById("publish-msg")?.value || "{}");
+  } catch {
+    toast("Invalid JSON for continuous publish", "error");
+    const cb = document.getElementById("repeat-checkbox");
+    if (cb) cb.checked = false;
+    return;
+  }
+  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  rosTopic.advertise();
+  const interval = Math.max(50, Math.round(1000 / hz));
+  const timer = setInterval(() => {
+    try {
+      lastValidMsg = JSON.parse(document.getElementById("publish-msg")?.value || "{}");
+    } catch { /* keep last valid */ }
+    rosTopic.publish(new ROSLIB.Message(lastValidMsg));
+  }, interval);
+  state.continuousPublish = { timer, rosTopic };
+}
+
+function stopContinuousPublish() {
+  if (!state.continuousPublish) return;
+  clearInterval(state.continuousPublish.timer);
+  state.continuousPublish.rosTopic.unadvertise();
+  state.continuousPublish = null;
+  const cb = document.getElementById("repeat-checkbox");
+  if (cb) cb.checked = false;
+}
+
+// ── Subscribe / watch ─────────────────────────────────────────────────────────
+
+async function doSubscribeOnce(topic, msgType) {
+  const btn = document.getElementById("btn-subscribe-once");
+  btn.disabled = true;
+  btn.textContent = "Waiting…";
+  try {
+    const msg = await subscribeOnce(topic, msgType, 5000);
+    showMsgCard(msg);
+    toast("Message received", "ok");
+  } catch (err) {
+    toast(String(err), "error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Subscribe once"; }
+  }
+}
+
+function startWatching(topic, msgType) {
+  stopWatching();
+  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  rosTopic.subscribe(msg => showMsgCard(msg));
+  state.watching = rosTopic;
+
+  const btnWatch = document.getElementById("btn-watch");
+  const btnStop = document.getElementById("btn-stop-watch");
+  const indicator = document.getElementById("watch-indicator");
+  if (btnWatch) btnWatch.style.display = "none";
+  if (btnStop) btnStop.style.display = "";
+  if (indicator) indicator.style.display = "";
+}
+
+function stopWatching() {
+  stopContinuousPublish();
+  if (state.watching) {
+    state.watching.unsubscribe();
+    state.watching = null;
+  }
+  const btnWatch = document.getElementById("btn-watch");
+  const btnStop = document.getElementById("btn-stop-watch");
+  const indicator = document.getElementById("watch-indicator");
+  if (btnWatch) btnWatch.style.display = "";
+  if (btnStop) btnStop.style.display = "none";
+  if (indicator) indicator.style.display = "none";
+}
+
+function showMsgCard(msg) {
+  const card = document.getElementById("last-msg");
+  if (!card) return;
+  card.className = "data-card";
+  card.textContent = JSON.stringify(msg, null, 2);
+}
+
+async function doPublish(topic, msgType) {
+  const textarea = document.getElementById("publish-msg");
+  let msg;
+  try {
+    msg = JSON.parse(textarea.value || "{}");
+  } catch {
+    toast("Invalid JSON", "error");
+    return;
+  }
+  pushPublishHistory(topic, JSON.stringify(msg, null, 2));
+  renderPublishHistory(topic);
+
+  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  rosTopic.advertise();
+  rosTopic.publish(new ROSLIB.Message(msg));
+  await sleep(100);
+  rosTopic.unadvertise();
+  toast("Published", "ok");
+}
+
+// ── Pinned topics ─────────────────────────────────────────────────────────────
+
+function togglePin(topic) {
+  if (state.pinnedTopics[topic]) unpinTopic(topic);
+  else pinTopic(topic);
+}
+
+function pinTopic(topic) {
+  if (state.pinnedTopics[topic] || !state.ros || !state.connected) return;
+  const msgType = state.topicTypes[topic] || "";
+  const sub = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  const entry = { msgType, sub, lastMsg: null, trail: [] };
+  state.pinnedTopics[topic] = entry;
+
+  sub.subscribe(msg => {
+    entry.lastMsg = msg;
+    const pos = extractPosition(msg);
+    if (pos) {
+      entry.trail.push(pos);
+      if (entry.trail.length > 100) entry.trail.shift();
+    }
+    updateWatchCard(topic);
+  });
+
+  renderPinnedRow();
+  renderSidebar();
+}
+
+function unpinTopic(topic) {
+  const entry = state.pinnedTopics[topic];
+  if (!entry) return;
+  entry.sub.unsubscribe();
+  delete state.pinnedTopics[topic];
+  renderPinnedRow();
+  renderSidebar();
+}
+
+function unpinAllTopics() {
+  Object.keys(state.pinnedTopics).forEach(topic => {
+    state.pinnedTopics[topic].sub.unsubscribe();
+    delete state.pinnedTopics[topic];
+  });
+  renderPinnedRow();
+}
+
+function renderPinnedRow() {
+  const row = document.getElementById("pinned-row");
+  const pinned = Object.entries(state.pinnedTopics);
+  row.hidden = !pinned.length;
+  row.innerHTML = "";
+
+  pinned.forEach(([topic, entry]) => {
+    const isPose = isPoseTopic(entry.msgType);
+    const card = document.createElement("div");
+    card.className = "watch-card";
+    card.id = `watch-card-${cssId(topic)}`;
+
+    card.innerHTML = `
+      <div class="watch-card-header">
+        <span class="watch-card-name" title="${escHtml(topic)}">${escHtml(topic)}</span>
+        <button class="watch-card-unpin" aria-label="Unpin ${escHtml(topic)}">✕</button>
+      </div>
+      ${isPose
+        ? `<canvas class="pose-canvas" id="pose-canvas-${cssId(topic)}" width="180" height="160" aria-label="Pose visualization for ${escHtml(topic)}"></canvas>`
+        : `<div class="watch-card-msg" id="watch-msg-${cssId(topic)}">${entry.lastMsg ? escHtml(JSON.stringify(entry.lastMsg, null, 2)) : "Waiting…"}</div>`
+      }
+    `;
+
+    card.querySelector(".watch-card-unpin").addEventListener("click", () => unpinTopic(topic));
+    row.appendChild(card);
+
+    if (isPose && entry.lastMsg) renderPoseCanvas(topic);
+  });
+}
+
+function updateWatchCard(topic) {
+  const entry = state.pinnedTopics[topic];
+  if (!entry) return;
+  if (isPoseTopic(entry.msgType)) {
+    renderPoseCanvas(topic);
+  } else {
+    const el = document.getElementById(`watch-msg-${cssId(topic)}`);
+    if (el && entry.lastMsg) el.textContent = JSON.stringify(entry.lastMsg, null, 2);
+  }
+}
+
+function isPoseTopic(msgType) {
+  return msgType.toLowerCase().includes("pose");
+}
+
+// ── Pose visualizer ───────────────────────────────────────────────────────────
+
+function extractPosition(msg) {
+  if (msg.pose?.pose?.position) {
+    return { x: msg.pose.pose.position.x, y: msg.pose.pose.position.y, theta: yawFromQuaternion(msg.pose.pose.orientation) };
+  }
+  if (msg.pose?.position) {
+    return { x: msg.pose.position.x, y: msg.pose.position.y, theta: yawFromQuaternion(msg.pose.orientation) };
+  }
+  if (msg.position) {
+    return { x: msg.position.x, y: msg.position.y, theta: yawFromQuaternion(msg.orientation) };
+  }
+  if (typeof msg.x === "number" && typeof msg.y === "number") {
+    return { x: msg.x, y: msg.y, theta: msg.theta ?? 0 };
+  }
+  return null;
+}
+
+function yawFromQuaternion(q) {
+  if (!q) return 0;
+  const siny = 2 * (q.w * q.z + q.x * q.y);
+  const cosy = 1 - 2 * (q.y * q.y + q.z * q.z);
+  return Math.atan2(siny, cosy);
+}
+
+function renderPoseCanvas(topic) {
+  const entry = state.pinnedTopics[topic];
+  if (!entry) return;
+  const canvas = document.getElementById(`pose-canvas-${cssId(topic)}`);
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+
+  const s = getComputedStyle(document.documentElement);
+  const cBorder  = s.getPropertyValue("--border").trim();
+  const cAccent  = s.getPropertyValue("--accent").trim();
+  const cMuted   = s.getPropertyValue("--text-muted").trim();
+  const cDanger  = s.getPropertyValue("--danger").trim();
+  const cSurface = s.getPropertyValue("--surface").trim();
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = cSurface;
+  ctx.fillRect(0, 0, W, H);
+
+  const pos = extractPosition(entry.lastMsg);
+  const allPts = pos ? [...entry.trail, pos] : entry.trail;
+  if (!allPts.length) return;
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  allPts.forEach(p => {
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+    minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
+  });
+
+  const pad = Math.max(maxX - minX, maxY - minY, 0.5) * 0.2;
+  const wx0 = minX - pad, wx1 = maxX + pad;
+  const wy0 = minY - pad, wy1 = maxY + pad;
+
+  const toC = (wx, wy) => ({
+    x: ((wx - wx0) / (wx1 - wx0)) * W,
+    y: H - ((wy - wy0) / (wy1 - wy0)) * H,
+  });
+
+  // Grid
+  ctx.strokeStyle = cBorder;
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 5; i++) {
+    const f = i / 5;
+    const cx = toC(wx0 + (wx1 - wx0) * f, wy0).x;
+    const cy = toC(wx0, wy0 + (wy1 - wy0) * f).y;
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+  }
+
+  // Trail
+  if (entry.trail.length > 1) {
+    for (let i = 1; i < entry.trail.length; i++) {
+      ctx.globalAlpha = 0.3 + 0.7 * (i / entry.trail.length);
+      ctx.strokeStyle = cMuted;
+      ctx.lineWidth = 1.5;
+      const a = toC(entry.trail[i - 1].x, entry.trail[i - 1].y);
+      const b = toC(entry.trail[i].x, entry.trail[i].y);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Current position
+  if (pos) {
+    const cp = toC(pos.x, pos.y);
+    const theta = pos.theta ?? 0;
+    const arrowLen = 14;
+    const headLen = 5;
+    const headAngle = 0.45;
+
+    ctx.strokeStyle = cAccent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cp.x, cp.y);
+    ctx.lineTo(cp.x + Math.cos(theta) * arrowLen, cp.y - Math.sin(theta) * arrowLen);
+    ctx.stroke();
+
+    const tipX = cp.x + Math.cos(theta) * arrowLen;
+    const tipY = cp.y - Math.sin(theta) * arrowLen;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(cp.x + Math.cos(theta - headAngle) * (arrowLen - headLen), cp.y - Math.sin(theta - headAngle) * (arrowLen - headLen));
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(cp.x + Math.cos(theta + headAngle) * (arrowLen - headLen), cp.y - Math.sin(theta + headAngle) * (arrowLen - headLen));
+    ctx.stroke();
+
+    ctx.fillStyle = cDanger;
+    ctx.beginPath();
+    ctx.arc(cp.x, cp.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// ── Node panel ────────────────────────────────────────────────────────────────
+
+async function renderNodePanel(node) {
+  const main = document.getElementById("main-panel");
+  main.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-title">${escHtml(node)}</div>
+      <div class="detail-type">Node</div>
+    </div>
+    <div class="section-label">Loading details…</div>
+  `;
+
+  try {
+    const res = await callRosapi("/rosapi/node_details", "rosapi/NodeDetails", { node });
+    const { publishing = [], subscribing = [], services = [] } = res;
+    main.innerHTML = `
+      <div class="detail-header">
+        <div class="detail-title">${escHtml(node)}</div>
+        <div class="detail-type">Node</div>
+      </div>
+      <div>
+        <div class="section-label">Publishes</div>
+        ${chipList(publishing)}
+      </div>
+      <div>
+        <div class="section-label">Subscribes</div>
+        ${chipList(subscribing)}
+      </div>
+      <div>
+        <div class="section-label">Services</div>
+        ${chipList(services)}
+      </div>
+    `;
+  } catch (err) {
+    main.innerHTML += `<div class="banner banner-error">Failed to load node details: ${escHtml(String(err))}</div>`;
+  }
+}
+
+// ── Service panel ──────────────────────────────────────────────────────────────
+
+async function renderServicePanel(service) {
+  const main = document.getElementById("main-panel");
+  main.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-title">${escHtml(service)}</div>
+      <div class="detail-type">Service</div>
+    </div>
+    <div class="section-label">Loading type…</div>
+  `;
+
+  let svcType = "unknown";
+  try {
+    const res = await callRosapi("/rosapi/service_type", "rosapi/ServiceType", { service });
+    svcType = res.type || "unknown";
+  } catch { /* leave as unknown */ }
+
+  main.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-title">${escHtml(service)}</div>
+      <div class="detail-type">${escHtml(svcType)}</div>
+    </div>
+
+    <div class="divider-label">Call service</div>
+
+    <div class="input-group">
+      <label class="input-label" for="svc-type-input">Service type</label>
+      <input class="input-field" id="svc-type-input" type="text" value="${escHtml(svcType)}" spellcheck="false">
+    </div>
+    <div class="input-group">
+      <label class="input-label" for="svc-request">Request (JSON)</label>
+      <textarea class="textarea-field" id="svc-request" rows="4" placeholder='{}'></textarea>
+    </div>
+    <div class="controls-row">
+      <button class="btn btn-primary btn-sm" id="btn-call-svc">Call</button>
+    </div>
+
+    <div id="svc-response-section" style="display:none">
+      <div class="section-label">Response</div>
+      <div class="data-card" id="svc-response"></div>
+    </div>
+  `;
+
+  attachJsonFormatter("svc-request");
+
+  document.getElementById("btn-call-svc").addEventListener("click", async () => {
+    const type = document.getElementById("svc-type-input").value.trim();
+    let req;
+    try {
+      req = JSON.parse(document.getElementById("svc-request").value || "{}");
+    } catch {
+      toast("Invalid JSON", "error");
+      return;
+    }
+    const btn = document.getElementById("btn-call-svc");
+    btn.disabled = true; btn.textContent = "Calling…";
+    try {
+      const result = await callRosapi(service, type, req);
+      const section = document.getElementById("svc-response-section");
+      const card = document.getElementById("svc-response");
+      section.style.display = "";
+      card.textContent = JSON.stringify(result, null, 2);
+      toast("Service called", "ok");
+    } catch (err) {
+      toast(`Service error: ${err}`, "error");
+    } finally {
+      btn.disabled = false; btn.textContent = "Call";
+    }
+  });
+}
+
+// ── Core ROS tool implementations ─────────────────────────────────────────────
+
+function subscribeOnce(topic, msgType, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    if (!state.ros || !state.connected) { reject(new Error("Not connected")); return; }
+    const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+    const timer = setTimeout(() => {
+      rosTopic.unsubscribe();
+      reject(new Error(`Timeout waiting for message on ${topic}`));
+    }, timeoutMs);
+    rosTopic.subscribe(msg => {
+      clearTimeout(timer);
+      rosTopic.unsubscribe();
+      resolve(msg);
+    });
+  });
+}
+
+async function subscribeForDuration(topic, msgType, durationSec, maxMessages = 100) {
+  if (!state.ros || !state.connected) throw new Error("Not connected");
+  const collected = [];
+  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  await new Promise(resolve => {
+    rosTopic.subscribe(msg => {
+      collected.push(msg);
+      if (collected.length >= maxMessages) { rosTopic.unsubscribe(); resolve(); }
+    });
+    setTimeout(() => { rosTopic.unsubscribe(); resolve(); }, durationSec * 1000);
+  });
+  return collected;
+}
+
+async function publishForDurations(topic, msgType, messages, durations) {
+  if (!state.ros || !state.connected) throw new Error("Not connected");
+  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  rosTopic.advertise();
+  for (let i = 0; i < messages.length; i++) {
+    rosTopic.publish(new ROSLIB.Message(messages[i]));
+    await sleep((durations[i] || 0) * 1000);
+  }
+  rosTopic.unadvertise();
+}
+
+async function getTopicDetails(topic) {
+  const [typeRes, pubRes, subRes] = await Promise.all([
+    callRosapi("/rosapi/topic_type", "rosapi/TopicType", { topic }),
+    callRosapi("/rosapi/publishers", "rosapi/Publishers", { topic }),
+    callRosapi("/rosapi/subscribers", "rosapi/Subscribers", { topic }),
+  ]);
+  return {
+    topic,
+    type: typeRes.type,
+    publishers: pubRes.publishers || [],
+    subscribers: subRes.subscribers || [],
+  };
+}
+
+async function getServiceDetails(service) {
+  const [typeRes, nodesRes] = await Promise.all([
+    callRosapi("/rosapi/service_type", "rosapi/ServiceType", { service }),
+    callRosapi("/rosapi/service_node", "rosapi/ServiceNode", { service }).catch(() => ({ node: "" })),
+  ]);
+  return { service, type: typeRes.type, node: nodesRes.node };
+}
+
+async function getNodeDetails(node) {
+  const res = await callRosapi("/rosapi/node_details", "rosapi/NodeDetails", { node });
+  return {
+    node,
+    publishing: res.publishing || [],
+    subscribing: res.subscribing || [],
+    services: res.services || [],
+  };
+}
+
+// ── MCP HTTP Client ───────────────────────────────────────────────────────────
+
+class MCPClient {
+  constructor() {
+    this.url = null; this.reqId = 0;
+    this.connected = false; this.serverInfo = null; this.tools = [];
+    this._traceHandlers = [];
+  }
+
+  on(event, fn) { if (event === "trace") this._traceHandlers.push(fn); }
+  _emit(entry)  { this._traceHandlers.forEach(fn => fn(entry)); }
+
+  async connect(url) {
+    this.url = url.replace(/\/$/, "");
+    this.reqId = 0; this.connected = false; this.tools = [];
+    // 1. initialize
+    const initResult = await this._request("initialize", {
+      protocolVersion: "2024-11-05",
+      capabilities: {},
+      clientInfo: { name: "ros-webmcp-dashboard", version: "1.0" },
+    });
+    this.serverInfo = initResult.serverInfo;
+    // 2. notifications/initialized (required)
+    await this._notify("notifications/initialized");
+    // 3. tools/list
+    const { tools } = await this._request("tools/list");
+    // normalize MCP shape → dashboard shape: inputSchema → parameters
+    this.tools = (tools || []).map(t => ({
+      name: t.name, description: t.description,
+      parameters: t.inputSchema || { type: "object", properties: {} },
+    }));
+    this.connected = true;
+    return { serverInfo: this.serverInfo, tools: this.tools };
+  }
+
+  async callTool(name, args) {
+    const r = await this._request("tools/call", { name, arguments: args });
+    // MCP result: { content: [{type:"text", text:"..."}] }
+    if (r?.content?.[0]?.type === "text") {
+      try { return JSON.parse(r.content[0].text); } catch { return r.content[0].text; }
+    }
+    return r;
+  }
+
+  disconnect() { this.connected = false; this.tools = []; this.serverInfo = null; }
+
+  async _request(method, params = {}) {
+    const id = ++this.reqId;
+    const body = { jsonrpc: "2.0", id, method };
+    if (Object.keys(params).length) body.params = params;
+    const t0 = Date.now();
+    this._emit({ dir: "out", layer: "mcp-http", method, body, ts: t0 });
+    const res = await fetch(`${this.url}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`MCP HTTP ${res.status}`);
+    const ct = res.headers.get("content-type") || "";
+    const json = ct.includes("text/event-stream")
+      ? await this._readSSE(res)
+      : await res.json();
+    this._emit({ dir: "in", layer: "mcp-http", method, body: json, durationMs: Date.now() - t0, ts: Date.now() });
+    if (json?.error) throw new Error(json.error.message || JSON.stringify(json.error));
+    return json?.result ?? json;
+  }
+
+  async _notify(method) {
+    const body = { jsonrpc: "2.0", method };
+    this._emit({ dir: "out", layer: "mcp-http", method, body, ts: Date.now(), notification: true });
+    await fetch(`${this.url}/mcp`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    }).catch(() => {});
+  }
+
+  async _readSSE(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "", last = null;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        for (const line of buf.split("\n")) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const p = JSON.parse(line.slice(6));
+            if (p.id !== undefined || p.error) last = p;
+          } catch {}
+        }
+        buf = buf.split("\n").pop() ?? "";
+      }
+    } finally { reader.cancel(); }
+    return last ?? {};
+  }
+}
+
+const mcpClient = new MCPClient();
+
+// ── Active tools selection ─────────────────────────────────────────────────────
+
+function getActiveTools() {
+  return mcpClient.connected ? mcpClient.tools : TOOLS;
+}
+
+// ── WebMCP tool registration ───────────────────────────────────────────────────
+
+const SIMULATORS = [
+  { name: "Turtlesim (ts1)", vncPort: 8080, detect: (nodes) => nodes.some(n => n === "/ts1/turtlesim" || n.endsWith("/ts1/turtlesim")) },
+  { name: "Turtlesim (ts2)", vncPort: 8081, detect: (nodes) => nodes.some(n => n === "/ts2/turtlesim" || n.endsWith("/ts2/turtlesim")) },
+  { name: "Turtlesim (ts3)", vncPort: 8082, detect: (nodes) => nodes.some(n => n === "/ts3/turtlesim" || n.endsWith("/ts3/turtlesim")) },
+];
+
+const TOOLS = [
+  {
+    name: "connect_to_robot",
+    description: "Set the rosbridge WebSocket URL and reconnect.",
+    parameters: {
+      type: "object",
+      properties: {
+        ip:   { type: "string", description: "rosbridge host IP or hostname", default: "127.0.0.1" },
+        port: { type: "number", description: "rosbridge port", default: 9090 },
+      },
+      required: ["ip", "port"],
+    },
+    handler: async ({ ip, port }) => {
+      const url = `ws://${ip}:${port}`;
+      document.getElementById("url-input").value = url;
+      connect(url);
+      return { status: "connecting", url };
+    },
+  },
+  {
+    name: "get_topics",
+    description: "List all ROS topics.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      await loadTopics();
+      renderSidebar();
+      return { topics: state.topics, types: state.topics.map(t => state.topicTypes[t] || "") };
+    },
+  },
+  {
+    name: "get_topic_type",
+    description: "Get the message type for a ROS topic.",
+    parameters: {
+      type: "object",
+      properties: { topic: { type: "string", description: "Full topic name, e.g. /turtle1/cmd_vel" } },
+      required: ["topic"],
+    },
+    handler: async ({ topic }) => {
+      const res = await callRosapi("/rosapi/topic_type", "rosapi/TopicType", { topic });
+      return { topic, type: res.type };
+    },
+  },
+  {
+    name: "get_topic_details",
+    description: "Get publishers, subscribers, and type for a topic.",
+    parameters: {
+      type: "object",
+      properties: { topic: { type: "string" } },
+      required: ["topic"],
+    },
+    handler: async ({ topic }) => getTopicDetails(topic),
+  },
+  {
+    name: "subscribe_once",
+    description: "Subscribe to a topic and return the first message received.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic:    { type: "string" },
+        msg_type: { type: "string", description: "ROS message type, e.g. turtlesim/msg/Pose" },
+        timeout:  { type: "number", description: "Timeout in seconds (default 5)", default: 5 },
+      },
+      required: ["topic", "msg_type"],
+    },
+    handler: async ({ topic, msg_type, timeout = 5 }) => {
+      const msg = await subscribeOnce(topic, msg_type, timeout * 1000);
+      if (state.selected?.kind === "topic" && state.selected?.name === topic) showMsgCard(msg);
+      return msg;
+    },
+  },
+  {
+    name: "subscribe_for_duration",
+    description: "Subscribe to a topic and collect messages for a given duration.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic:        { type: "string" },
+        msg_type:     { type: "string" },
+        duration:     { type: "number", description: "Duration in seconds" },
+        max_messages: { type: "number", description: "Stop after this many messages", default: 100 },
+      },
+      required: ["topic", "msg_type", "duration"],
+    },
+    handler: async ({ topic, msg_type, duration, max_messages = 100 }) =>
+      subscribeForDuration(topic, msg_type, duration, max_messages),
+  },
+  {
+    name: "publish_once",
+    description: "Publish a single message to a topic.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic:    { type: "string" },
+        msg_type: { type: "string" },
+        msg:      { type: "object", description: "Message payload as JSON object" },
+      },
+      required: ["topic", "msg_type", "msg"],
+    },
+    handler: async ({ topic, msg_type, msg }) => {
+      const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msg_type });
+      rosTopic.advertise();
+      rosTopic.publish(new ROSLIB.Message(msg));
+      await sleep(100);
+      rosTopic.unadvertise();
+      return { published: true, topic, msg };
+    },
+  },
+  {
+    name: "publish_for_durations",
+    description: "Publish a sequence of messages with delays between each.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic:     { type: "string" },
+        msg_type:  { type: "string" },
+        messages:  { type: "array", items: { type: "object" }, description: "Array of message payloads" },
+        durations: { type: "array", items: { type: "number" }, description: "Delay in seconds after each message" },
+      },
+      required: ["topic", "msg_type", "messages", "durations"],
+    },
+    handler: async ({ topic, msg_type, messages, durations }) => {
+      await publishForDurations(topic, msg_type, messages, durations);
+      return { published: messages.length, topic };
+    },
+  },
+  {
+    name: "get_services",
+    description: "List all available ROS services.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      await loadServices();
+      renderSidebar();
+      return { services: state.services };
+    },
+  },
+  {
+    name: "get_service_details",
+    description: "Get the request/response type and provider node for a service.",
+    parameters: {
+      type: "object",
+      properties: { service: { type: "string" } },
+      required: ["service"],
+    },
+    handler: async ({ service }) => getServiceDetails(service),
+  },
+  {
+    name: "call_service",
+    description: "Call a ROS service with a request payload.",
+    parameters: {
+      type: "object",
+      properties: {
+        service_name: { type: "string" },
+        service_type: { type: "string" },
+        request:      { type: "object", description: "Request payload as JSON object" },
+      },
+      required: ["service_name", "service_type", "request"],
+    },
+    handler: async ({ service_name, service_type, request }) =>
+      callRosapi(service_name, service_type, request),
+  },
+  {
+    name: "get_nodes",
+    description: "List all running ROS nodes.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      await loadNodes();
+      renderSidebar();
+      return { nodes: state.nodes };
+    },
+  },
+  {
+    name: "get_node_details",
+    description: "Get publishers, subscribers, and services for a node.",
+    parameters: {
+      type: "object",
+      properties: { node: { type: "string" } },
+      required: ["node"],
+    },
+    handler: async ({ node }) => getNodeDetails(node),
+  },
+  {
+    name: "get_connected_robots",
+    description:
+      "Detect connected robots by finding active cmd_vel topics on the ROS network. " +
+      "Works with any robot — no hardcoded names. " +
+      "Returns the cmd_vel topic and message type for each robot. " +
+      "Call this when you need to discover robot topics before issuing motion commands.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const res = await callRosapi("/rosapi/topics", "rosapi/Topics", {});
+      const topics = res.topics || [];
+      const types  = res.types  || [];
+      const robots = topics
+        .map((t, i) => ({ topic: t, type: types[i] }))
+        .filter(({ topic }) => topic === "/cmd_vel" || topic.endsWith("/cmd_vel"))
+        .map(({ topic, type }) => ({ cmd_vel_topic: topic, cmd_vel_type: type }));
+      return { robots, count: robots.length };
+    },
+  },
+  {
+    name: "move_robots",
+    description:
+      "Move multiple robots simultaneously. All start and stop at the same time. " +
+      "Use get_connected_robots() first to get topics and message types. " +
+      "Each robot entry needs: cmd_vel_topic, msg_type, and linear_x and/or angular_z.",
+    parameters: {
+      type: "object",
+      properties: {
+        robots: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              cmd_vel_topic: { type: "string" },
+              msg_type:      { type: "string" },
+              linear_x:      { type: "number", default: 0 },
+              angular_z:     { type: "number", default: 0 },
+            },
+            required: ["cmd_vel_topic", "msg_type"],
+          },
+        },
+        duration: { type: "number", description: "Duration in seconds", default: 2 },
+      },
+      required: ["robots"],
+    },
+    handler: async ({ robots, duration = 2 }) => {
+      if (!state.ros || !state.connected) throw new Error("Not connected");
+      if (!robots || robots.length === 0) throw new Error("robots list cannot be empty");
+
+      const prepared = robots.map(r => {
+        const stamped = r.msg_type.includes("TwistStamped");
+        const header   = { stamp: { sec: 0, nanosec: 0 }, frame_id: "" };
+        const baseVel  = { linear: { x: r.linear_x || 0 }, angular: { z: r.angular_z || 0 } };
+        const baseStop = { linear: { x: 0 }, angular: { z: 0 } };
+        return {
+          rosTopic: new ROSLIB.Topic({ ros: state.ros, name: r.cmd_vel_topic, messageType: r.msg_type }),
+          velMsg:   stamped ? { header, twist: baseVel }  : baseVel,
+          stopMsg:  stamped ? { header, twist: baseStop } : baseStop,
+          topic:    r.cmd_vel_topic,
+        };
+      });
+
+      prepared.forEach(r => r.rosTopic.advertise());
+      prepared.forEach(r => r.rosTopic.publish(new ROSLIB.Message(r.velMsg)));
+      await sleep(duration * 1000);
+      prepared.forEach(r => r.rosTopic.publish(new ROSLIB.Message(r.stopMsg)));
+      prepared.forEach(r => r.rosTopic.unadvertise());
+
+      return { success: true, robots_moved: prepared.length, duration_s: duration, topics: prepared.map(r => r.topic) };
+    },
+  },
+];
+
+let _webmcpActive = false;
+
+function registerWebMCPTools() {
+  const dot  = document.getElementById("webmcp-status-dot");
+  const text = document.getElementById("webmcp-status-text");
+
+  if (!navigator.modelContext) {
+    if (dot)  dot.className  = "status-dot";
+    if (text) text.textContent = "WebMCP · inactive";
+    console.info("[WebMCP] navigator.modelContext not available — tools not registered");
+    return;
+  }
+
+  let registered = 0;
+  let lastError = null;
+  const activeTools = getActiveTools();
+  for (const tool of activeTools) {
+    try {
+      navigator.modelContext.registerTool({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.parameters,
+        execute: async (params) => {
+          const result = await chatExecuteToolCall(tool.name, params);
+          return result;
+        },
+      });
+      registered++;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[WebMCP] Failed to register tool "${tool.name}":`, err);
+    }
+  }
+
+  if (registered === 0) {
+    if (dot)  dot.className  = "status-dot";
+    if (text) text.textContent = "WebMCP · inactive";
+    console.error("[WebMCP] No tools registered. Last error:", lastError);
+  } else {
+    _webmcpActive = true;
+    if (dot)  dot.className  = "status-dot connected";
+    if (text) text.textContent = `WebMCP · ${registered} tools`;
+    console.info(`[WebMCP] Registered ${registered} tools`);
+  }
+}
+
+// ── Tool call log ─────────────────────────────────────────────────────────────
+
+function appendToolLog(entry) {
+  state.toolLog.unshift(entry);
+  if (state.toolLog.length > 50) state.toolLog.pop();
+
+  const badge = document.getElementById("tool-log-badge");
+  if (badge) {
+    badge.textContent = state.toolLog.length;
+    badge.hidden = false;
+  }
+
+  const list = document.getElementById("tool-log-list");
+  const body = document.getElementById("log-body");
+  const toggleBtn = document.getElementById("log-toggle");
+
+  if (state.toolLog.length === 1 && body?.hidden) {
+    body.hidden = false;
+    toggleBtn?.setAttribute("aria-expanded", "true");
+    if (toggleBtn) toggleBtn.textContent = "▲";
+    // ensure tool log tab is active when auto-opening
+    setLogTab("tools");
+  }
+
+  if (list && body && !body.hidden) {
+    const traceList = document.getElementById("trace-list");
+    if (!traceList?.hidden || !list.hidden) {
+      list.insertBefore(createLogEntryEl(entry), list.firstChild);
+    }
+  }
+}
+
+function createLogEntryEl(entry) {
+  const el = document.createElement("div");
+  el.className = "log-entry";
+
+  const timeStr = entry.ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const isError = !!entry.result?.error;
+
+  const transportHtml = entry.transport
+    ? `<span class="log-transport log-transport-${entry.transport === "mcp-http" ? "mcp" : "browser"}">${entry.transport === "mcp-http" ? "MCP" : "Browser"}</span>`
+    : "";
+
+  el.innerHTML = `
+    <div class="log-entry-header">
+      <span class="log-tool-name">${escHtml(entry.toolName)}</span>
+      ${transportHtml}
+      <span class="log-duration">${entry.durationMs}ms</span>
+      <span class="log-time">${escHtml(timeStr)}</span>
+      <button class="btn btn-sm log-replay-btn" title="Replay" aria-label="Replay ${escHtml(entry.toolName)}">↺</button>
+    </div>
+    <div class="log-params">${escHtml(JSON.stringify(entry.params))}</div>
+    <div class="log-result${isError ? " log-result-error" : ""}">${escHtml(JSON.stringify(entry.result))}</div>
+  `;
+
+  el.querySelector(".log-replay-btn").addEventListener("click", () => replayToolCall(entry));
+  return el;
+}
+
+function replayToolCall(entry) {
+  chatExecuteToolCall(entry.toolName, entry.params)
+    .then(() => toast(`Replayed ${entry.toolName}`, "ok"))
+    .catch(err => toast(`Replay failed: ${err}`, "error"));
+}
+
+// ── Protocol Trace ────────────────────────────────────────────────────────────
+
+function appendTrace(entry) {
+  entry.id = ++_traceLogId;
+  traceLog.unshift(entry);
+  if (traceLog.length > 200) traceLog.pop();
+
+  const badge = document.getElementById("trace-badge");
+  if (badge) {
+    badge.textContent = traceLog.length;
+    badge.hidden = false;
+  }
+
+  const traceList = document.getElementById("trace-list");
+  const body = document.getElementById("log-body");
+  if (traceList && body && !body.hidden && !traceList.hidden) {
+    traceList.insertBefore(createTraceEntryEl(entry), traceList.firstChild);
+  }
+}
+
+function createTraceEntryEl(entry) {
+  const el = document.createElement("div");
+  el.className = "trace-entry";
+  const layerLabel = { "mcp-http": "MCP", "rosbridge": "ROS WS", "ai-api": "AI" }[entry.layer] || entry.layer;
+  const dirSymbol = entry.dir === "out" ? "→" : "←";
+  const timeStr = new Date(entry.ts).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const layerClass = entry.layer.replace(/-/g, "-");
+
+  el.innerHTML = `
+    <div class="trace-entry-header">
+      <span class="trace-dir-${entry.dir}">${dirSymbol}</span>
+      <span class="trace-layer trace-layer-${layerClass}">${escHtml(layerLabel)}</span>
+      <span class="trace-method">${escHtml(entry.method)}</span>
+      ${entry.durationMs !== undefined ? `<span class="trace-duration">${entry.durationMs}ms</span>` : ""}
+      <span class="trace-duration">${timeStr}</span>
+      <button class="trace-expand-btn" aria-label="Expand">▶</button>
+    </div>
+    <pre class="trace-body-expand" hidden>${escHtml(JSON.stringify(entry.body, null, 2))}</pre>
+  `;
+  el.querySelector(".trace-expand-btn").addEventListener("click", function() {
+    const pre = el.querySelector(".trace-body-expand");
+    pre.hidden = !pre.hidden;
+    this.textContent = pre.hidden ? "▶" : "▼";
+  });
+  return el;
+}
+
+function renderTracePanel() {
+  const traceList = document.getElementById("trace-list");
+  if (!traceList) return;
+  traceList.innerHTML = "";
+  traceLog.forEach(entry => traceList.appendChild(createTraceEntryEl(entry)));
+}
+
+// ── Log panel tab switching ────────────────────────────────────────────────────
+
+function setLogTab(tab) {
+  const toolList = document.getElementById("tool-log-list");
+  const traceList = document.getElementById("trace-list");
+  const tabTools = document.getElementById("log-tab-tools");
+  const tabTrace = document.getElementById("log-tab-trace");
+
+  if (tab === "tools") {
+    if (toolList) toolList.hidden = false;
+    if (traceList) traceList.hidden = true;
+    tabTools?.classList.add("active");
+    tabTrace?.classList.remove("active");
+  } else {
+    if (toolList) toolList.hidden = true;
+    if (traceList) traceList.hidden = false;
+    tabTools?.classList.remove("active");
+    tabTrace?.classList.add("active");
+    renderTracePanel();
+  }
+}
+
+// ── MCP connect / disconnect ──────────────────────────────────────────────────
+
+function updateMCPStatusDot(status) {
+  // status: "disconnected" | "connecting" | "connected" | "error"
+  const dot = document.getElementById("mcp-status-dot");
+  const text = document.getElementById("mcp-status-text");
+  const row = document.getElementById("mcp-status-row");
+  if (!dot || !text) return;
+  dot.className = "status-dot" + (status === "connected" ? " connected" : status === "error" ? " error" : status === "connecting" ? " connecting" : "");
+  if (status === "connected" && mcpClient.serverInfo) {
+    text.textContent = `MCP · ${mcpClient.tools.length} tools`;
+  } else if (status === "connecting") {
+    text.textContent = "MCP · connecting…";
+  } else if (status === "error") {
+    text.textContent = "MCP · error";
+  } else {
+    text.textContent = "MCP";
+  }
+}
+
+async function connectMCP(url) {
+  mcpState.url = url;
+  localStorage.setItem("webmcp-mcp-url", url);
+  const btn = document.getElementById("mcp-connect-btn");
+  if (btn) { btn.textContent = "Connecting…"; btn.disabled = true; }
+  updateMCPStatusDot("connecting");
+  try {
+    const { serverInfo, tools } = await mcpClient.connect(url);
+    updateMCPStatusDot("connected");
+    if (btn) { btn.textContent = "Disconnect"; btn.disabled = false; }
+    toast(`Connected to ${serverInfo?.name || "MCP server"} · ${tools.length} tools`, "ok");
+    registerWebMCPTools();
+    if (!state.selected) renderMainPlaceholder();
+  } catch (err) {
+    updateMCPStatusDot("error");
+    if (btn) { btn.textContent = "Connect"; btn.disabled = false; }
+    toast(`MCP connection failed: ${err.message}`, "error");
+  }
+}
+
+function disconnectMCP() {
+  mcpClient.disconnect();
+  updateMCPStatusDot("disconnected");
+  const btn = document.getElementById("mcp-connect-btn");
+  if (btn) { btn.textContent = "Connect"; btn.disabled = false; }
+  registerWebMCPTools();
+  if (!state.selected) renderMainPlaceholder();
+}
+
+// ── UI helpers ─────────────────────────────────────────────────────────────────
+
+function attachJsonFormatter(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("blur", () => {
+    const val = el.value.trim();
+    if (!val) return;
+    try { el.value = JSON.stringify(JSON.parse(val), null, 2); } catch { /* leave as-is */ }
+  });
+}
+
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function chipList(items) {
+  if (!items.length) return `<div class="sidebar-empty" style="padding:0">None</div>`;
+  return `<div class="list-chips">${items.map(i => `<span class="chip">${escHtml(i)}</span>`).join("")}</div>`;
+}
+
+// ── Chat ──────────────────────────────────────────────────────────────────────
+
+const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
+const GITHUB_CLIENT_ID = "Ov23lioKDt8Os7hdiSEh";
+const CORS_PROXY_URL = "https://cors-proxy.jonasneves.workers.dev";
+const OAUTH_CALLBACK_ORIGIN = "https://neevs.io";
+
+const chatState = {
+  provider: "anthropic",
+  model: "claude-sonnet-4-6",
+  claudeKey: localStorage.getItem("webmcp-claude-key") || "",
+  githubAuth: JSON.parse(localStorage.getItem("webmcp-gh-auth") || "null"), // {token, username}
+  convMsgs: [],  // raw API message history (provider-specific format)
+  abortCtrl: null,
+  busy: false,
+};
+
+const CHAT_SUGGESTIONS = [
+  "Draw a 5-pointed star with turtle1",
+  "Make all 3 turtles spin simultaneously",
+  "Run a full ROS system health check",
+  "Change turtlesim background to night sky blue",
+];
+
+function makeSuggestionsEl() {
+  const wrap = document.createElement("div");
+  wrap.id = "chat-suggestions";
+  wrap.className = "chat-suggestions";
+  const label = document.createElement("p");
+  label.className = "chat-suggestions-label";
+  label.textContent = "Try asking…";
+  wrap.appendChild(label);
+  CHAT_SUGGESTIONS.forEach(text => {
+    const btn = document.createElement("button");
+    btn.className = "chat-suggestion";
+    btn.type = "button";
+    btn.textContent = text;
+    btn.addEventListener("click", () => {
+      const input = document.getElementById("chat-input");
+      input.value = text;
+      input.focus();
+    });
+    wrap.appendChild(btn);
+  });
+  return wrap;
+}
+
+function clearChatMessages() {
+  const container = document.getElementById("chat-messages");
+  container.innerHTML = "";
+  container.appendChild(makeSuggestionsEl());
+}
+
+function initChat() {
+  const keyInput = document.getElementById("chat-api-key");
+  keyInput.value = chatState.claudeKey;
+
+  const sel = document.getElementById("chat-model-select");
+  const saved = localStorage.getItem("webmcp-chat-model") || "anthropic:claude-sonnet-4-6";
+  sel.value = saved;
+  applyModelSelection(saved);
+
+  sel.addEventListener("change", () => {
+    localStorage.setItem("webmcp-chat-model", sel.value);
+    applyModelSelection(sel.value);
+    updateChatModelLabel();
+    chatState.convMsgs = [];
+    clearChatMessages();
+  });
+  updateChatModelLabel();
+
+  document.getElementById("chat-key-save").addEventListener("click", () => {
+    chatState.claudeKey = keyInput.value.trim();
+    localStorage.setItem("webmcp-claude-key", chatState.claudeKey);
+    toast("API key saved", "ok");
+  });
+
+  document.getElementById("chat-send").addEventListener("click", sendChatMsg);
+  document.getElementById("chat-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChatMsg(); }
+  });
+  document.getElementById("chat-abort").addEventListener("click", () => chatState.abortCtrl?.abort());
+  document.getElementById("chat-clear").addEventListener("click", () => {
+    chatState.convMsgs = [];
+    clearChatMessages();
+  });
+  document.addEventListener("keydown", (e) => {
+    const panel = document.getElementById("chat-panel");
+    if (!panel || panel.hidden) return;
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || document.activeElement?.isContentEditable) return;
+    const chatInput = document.getElementById("chat-input");
+    if (chatInput && !chatInput.disabled) chatInput.focus();
+  });
+
+  const simsBtn     = document.getElementById("sims-btn");
+  const simsPopover = document.getElementById("sims-popover");
+  simsBtn.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    const opening = simsPopover.hidden;
+    simsPopover.hidden = !opening;
+    simsBtn.setAttribute("aria-expanded", String(opening));
+    if (opening) {
+      updateSimulatorsPopover(); // show current state immediately
+      if (state.connected) {
+        await loadNodes();
+        updateSimulatorsPopover(); // refresh with latest node list
+      }
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (!simsPopover.hidden && !e.target.closest(".sims-wrap")) {
+      simsPopover.hidden = true;
+      simsBtn.setAttribute("aria-expanded", "false");
+    }
+  });
+
+  document.getElementById("chat-panel-toggle").addEventListener("click", () => {
+    const panel = document.getElementById("chat-panel");
+    const btn = document.getElementById("chat-panel-toggle");
+    const open = panel.hidden;
+    panel.hidden = !open;
+    btn.setAttribute("aria-expanded", String(open));
+    btn.textContent = open ? "Close Chat" : "AI Chat";
+  });
+
+  clearChatMessages();
+}
+
+function applyModelSelection(value) {
+  const colonIdx = value.indexOf(":");
+  chatState.provider = value.slice(0, colonIdx);
+  chatState.model = value.slice(colonIdx + 1);
+  const isGitHub = chatState.provider === "github";
+  const isLocal  = chatState.provider === "local";
+  document.getElementById("chat-claude-bar").style.display = (isGitHub || isLocal) ? "none" : "";
+  document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
+  const noticeDismissed = !!localStorage.getItem("webmcp-github-notice-dismissed");
+  document.getElementById("github-notice").hidden = !isGitHub || noticeDismissed;
+  if (isGitHub) updateGitHubAuthBar();
+}
+
+async function connectGitHub() {
+  const oauthState = crypto.randomUUID();
+  const redirectUri = OAUTH_CALLBACK_ORIGIN + "/";
+
+  const authUrl = new URL("https://github.com/login/oauth/authorize");
+  authUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("state", oauthState);
+  authUrl.searchParams.set("scope", "read:user");
+
+  const width = 500, height = 600;
+  const left = window.screenX + (window.innerWidth - width) / 2;
+  const top = window.screenY + (window.innerHeight - height) / 2;
+
+  return new Promise((resolve, reject) => {
+    const popup = window.open(
+      authUrl.toString(), "github-oauth",
+      `width=${width},height=${height},left=${left},top=${top},popup=yes`
+    );
+    if (!popup) { reject(new Error("Popup blocked — allow popups for this site")); return; }
+
+    const handleMessage = async (event) => {
+      if (event.origin !== OAUTH_CALLBACK_ORIGIN) return;
+      const { type, code, error } = event.data || {};
+      if (type !== "oauth-callback") return;
+      window.removeEventListener("message", handleMessage);
+      clearInterval(pollTimer);
+      if (error) { reject(new Error(error)); return; }
+      if (!code) { reject(new Error("No code received")); return; }
+      try {
+        const res = await fetch(`${CORS_PROXY_URL}/token`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, code, redirect_uri: redirectUri }),
+        });
+        const data = await res.json();
+        if (data.error || !data.access_token) throw new Error(data.error_description || data.error || "Token exchange failed");
+        let username = data.username;
+        if (!username) {
+          const userRes = await fetch("https://api.github.com/user", {
+            headers: { Authorization: `Bearer ${data.access_token}`, Accept: "application/vnd.github+json" },
+          });
+          if (userRes.ok) username = (await userRes.json()).login;
+        }
+        resolve({ token: data.access_token, username: username || "" });
+      } catch (err) {
+        reject(err);
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    const pollTimer = setInterval(() => {
+      if (popup.closed) {
+        clearInterval(pollTimer);
+        window.removeEventListener("message", handleMessage);
+        reject(new Error("OAuth flow cancelled"));
+      }
+    }, 500);
+  });
+}
+
+function updateGitHubAuthBar() {
+  const bar = document.getElementById("chat-github-bar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  if (chatState.githubAuth) {
+    const label = document.createElement("span");
+    label.className = "github-user-label";
+    label.textContent = `@${chatState.githubAuth.username}`;
+    const disconnectBtn = document.createElement("button");
+    disconnectBtn.className = "btn btn-sm github-disconnect-btn";
+    disconnectBtn.textContent = "Disconnect";
+    disconnectBtn.addEventListener("click", () => {
+      chatState.githubAuth = null;
+      localStorage.removeItem("webmcp-gh-auth");
+      chatState.convMsgs = [];
+      clearChatMessages();
+      updateGitHubAuthBar();
+    });
+    bar.appendChild(label);
+    bar.appendChild(disconnectBtn);
+  } else {
+    const connectBtn = document.createElement("button");
+    connectBtn.className = "btn btn-sm github-connect-btn";
+    connectBtn.textContent = "Connect GitHub";
+    connectBtn.addEventListener("click", async () => {
+      connectBtn.textContent = "Connecting…";
+      connectBtn.disabled = true;
+      try {
+        chatState.githubAuth = await connectGitHub();
+        localStorage.setItem("webmcp-gh-auth", JSON.stringify(chatState.githubAuth));
+        updateGitHubAuthBar();
+      } catch (err) {
+        if (err.message !== "OAuth flow cancelled") toast(err.message, "error");
+        connectBtn.textContent = "Connect GitHub";
+        connectBtn.disabled = false;
+      }
+    });
+    bar.appendChild(connectBtn);
+  }
+}
+
+function getSystemPrompt() {
+  const lines = [
+    "You are an AI assistant embedded in the ROS WebMCP Dashboard.",
+    "You have access to ROS tools to inspect and control a robot via rosbridge.",
+  ];
+  if (state.connected) {
+    lines.push(`Connected to rosbridge at ${state.url}.`);
+    lines.push(`Topics (${state.topics.length}): ${state.topics.slice(0, 20).join(", ")}${state.topics.length > 20 ? "…" : ""}`);
+    if (state.nodes.length) lines.push(`Nodes: ${state.nodes.slice(0, 10).join(", ")}`);
+    if (state.services.length) lines.push(`Services: ${state.services.slice(0, 10).join(", ")}`);
+  } else {
+    const inputUrl = document.getElementById("url-input")?.value?.trim();
+    const urlHint = inputUrl ? ` The URL currently configured in the dashboard is: ${inputUrl}.` : "";
+    lines.push(`Not connected to rosbridge.${urlHint} Call connect_to_robot to connect — do not ask the user for the URL unless it is missing.`);
+  }
+  if (state.selected) lines.push(`User is currently viewing ${state.selected.kind} "${state.selected.name}".`);
+  lines.push("Use the provided tools to answer questions. Be concise.");
+  return lines.join("\n");
+}
+
+function getClaudeTools() {
+  return getActiveTools().map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
+}
+
+function getOpenAITools() {
+  return getActiveTools().map(t => ({
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: t.parameters },
+  }));
+}
+
+async function chatExecuteToolCall(name, input) {
+  const t0 = Date.now();
+  const id = ++_toolLogId;
+  let result, transport;
+  if (mcpClient.connected) {
+    transport = "mcp-http";
+    try { result = await mcpClient.callTool(name, input); }
+    catch (err) { result = { error: String(err) }; }
+  } else {
+    transport = "browser";
+    const tool = TOOLS.find(t => t.name === name);
+    if (!tool) {
+      result = { error: `Unknown tool: ${name}` };
+    } else {
+      try { result = await tool.handler(input); }
+      catch (err) { result = { error: String(err) }; }
+    }
+  }
+  appendToolLog({ id, toolName: name, params: input, result, ts: new Date(), durationMs: Date.now() - t0, transport });
+  return result;
+}
+
+async function sendChatMsg() {
+  const input = document.getElementById("chat-input");
+  const text = input.value.trim();
+  if (!text || chatState.busy) return;
+
+  const key = chatState.provider === "github" ? chatState.githubAuth?.token
+            : chatState.provider === "local"  ? null
+            : chatState.claudeKey;
+  if (chatState.provider !== "local" && !key) {
+    toast(chatState.provider === "github" ? "Connect GitHub above" : "Enter your Anthropic API key first", "error");
+    return;
+  }
+
+  input.value = "";
+  document.getElementById("chat-suggestions")?.remove();
+  appendChatMsg("user", text);
+  chatState.convMsgs.push({ role: "user", content: text });
+  chatState.busy = true;
+  chatState.abortCtrl = new AbortController();
+  document.getElementById("chat-send").disabled = true;
+  document.getElementById("chat-abort").hidden = false;
+  showChatSpinner();
+
+  try {
+    if (chatState.provider === "github") {
+      await runConversationGitHub(key, chatState.abortCtrl.signal);
+    } else if (chatState.provider === "local") {
+      await runConversationClaude(null, chatState.abortCtrl.signal, LOCAL_PROXY_URL);
+    } else {
+      await runConversationClaude(key, chatState.abortCtrl.signal);
+    }
+  } catch (err) {
+    if (err.name !== "AbortError") { hideChatSpinner(); appendChatMsg("error", err.message); }
+  } finally {
+    chatState.busy = false;
+    chatState.abortCtrl = null;
+    document.getElementById("chat-send").disabled = false;
+    document.getElementById("chat-abort").hidden = true;
+  }
+}
+
+// ── Claude conversation ───────────────────────────────────────────────────────
+
+async function runConversationClaude(apiKey, signal, url = "https://api.anthropic.com/v1/messages") {
+  while (true) {
+    let body;
+    try {
+      const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
+      if (apiKey) {
+        headers["x-api-key"] = apiKey;
+        headers["anthropic-dangerous-direct-browser-access"] = "true";
+      }
+      const res = await fetch(url, {
+        method: "POST",
+        signal,
+        headers,
+        body: JSON.stringify({
+          model: chatState.model,
+          max_tokens: 4096,
+          system: getSystemPrompt(),
+          messages: chatState.convMsgs,
+          tools: getClaudeTools(),
+          stream: true,
+        }),
+      });
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
+      }
+      body = res.body;
+    } catch (err) {
+      hideChatSpinner();
+      if (err.name === "AbortError") return;
+      appendChatMsg("error", err.message);
+      return;
+    }
+
+    const contentBlocks = [];
+    let currentTextEl = null;
+    let currentTextContent = "";
+    let currentToolInput = "";
+    let currentBlockType = null;
+    let rafId = 0;
+
+    try {
+      for await (const { event, data } of parseSSEStream(body)) {
+        switch (event) {
+          case "content_block_start": {
+            const block = data.content_block;
+            currentBlockType = block.type;
+            if (block.type === "text") {
+              hideChatSpinner();
+              currentTextContent = block.text || "";
+              currentTextEl = appendChatMsg("assistant", currentTextContent);
+            } else if (block.type === "tool_use") {
+              contentBlocks.push({ type: "tool_use", id: block.id, name: block.name, input: {} });
+              currentToolInput = "";
+              appendChatToolCall(block.id, block.name);
+            }
+            break;
+          }
+          case "content_block_delta": {
+            if (data.delta.type === "text_delta") {
+              currentTextContent += data.delta.text;
+              if (currentTextEl && !rafId) {
+                rafId = requestAnimationFrame(() => {
+                  rafId = 0;
+                  if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
+                  scrollChatBottom();
+                });
+              }
+            } else if (data.delta.type === "input_json_delta") {
+              currentToolInput += data.delta.partial_json;
+            }
+            break;
+          }
+          case "content_block_stop": {
+            if (currentBlockType === "text" && currentTextContent) {
+              if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+              if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
+              contentBlocks.push({ type: "text", text: currentTextContent });
+              currentTextEl = null;
+              currentTextContent = "";
+            } else if (currentBlockType === "tool_use") {
+              const toolBlock = contentBlocks[contentBlocks.length - 1];
+              try { toolBlock.input = currentToolInput ? JSON.parse(currentToolInput) : {}; }
+              catch { toolBlock.input = {}; }
+              currentToolInput = "";
+            }
+            currentBlockType = null;
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      hideChatSpinner();
+      if (err.name === "AbortError") return;
+      appendChatMsg("error", "Stream error: " + err.message);
+      return;
+    }
+
+    chatState.convMsgs.push({ role: "assistant", content: contentBlocks });
+    const toolUses = contentBlocks.filter(b => b.type === "tool_use");
+    if (toolUses.length === 0) { hideChatSpinner(); return; }
+
+    const toolResults = [];
+    for (const tu of toolUses) {
+      const result = await chatExecuteToolCall(tu.name, tu.input);
+      updateChatToolCall(tu.id, result, tu.input);
+      toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(result) });
+    }
+    chatState.convMsgs.push({ role: "user", content: toolResults });
+    showChatSpinner();
+  }
+}
+
+async function* parseSSEStream(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      let currentEvent = null;
+      for (const line of lines) {
+        if (line.startsWith("event: ")) {
+          currentEvent = line.slice(7).trim();
+        } else if (line.startsWith("data: ") && currentEvent) {
+          try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch {}
+          currentEvent = null;
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// ── GitHub Models conversation ────────────────────────────────────────────────
+
+async function runConversationGitHub(token, signal) {
+  while (true) {
+    let body;
+    try {
+      const res = await fetch("https://models.github.ai/inference/chat/completions", {
+        method: "POST",
+        signal,
+        headers: {
+          "content-type": "application/json",
+          "authorization": `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          model: chatState.model,
+          messages: [{ role: "system", content: getSystemPrompt() }, ...chatState.convMsgs],
+          tools: getOpenAITools(),
+          tool_choice: "auto",
+          max_completion_tokens: 4096,
+          stream: true,
+        }),
+      });
+      if (!res.ok) {
+        hideChatSpinner();
+        if (res.status === 429) { appendRateLimitMsg(); return; }
+        const txt = await res.text();
+        throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
+      }
+      body = res.body;
+    } catch (err) {
+      hideChatSpinner();
+      if (err.name === "AbortError") return;
+      appendChatMsg("error", err.message);
+      return;
+    }
+
+    let currentTextEl = null;
+    let currentTextContent = "";
+    let rafId = 0;
+    const tcMap = {};
+
+    try {
+      for await (const chunk of parseOpenAIStream(body)) {
+        const delta = chunk.choices?.[0]?.delta;
+        if (!delta) continue;
+
+        if (delta.content) {
+          if (!currentTextEl) {
+            hideChatSpinner();
+            currentTextContent = "";
+            currentTextEl = appendChatMsg("assistant", "");
+          }
+          currentTextContent += delta.content;
+          if (!rafId) {
+            rafId = requestAnimationFrame(() => {
+              rafId = 0;
+              if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
+              scrollChatBottom();
+            });
+          }
+        }
+
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            if (!tcMap[tc.index]) tcMap[tc.index] = { id: "", name: "", arguments: "", _shown: false };
+            if (tc.id) tcMap[tc.index].id = tc.id;
+            if (tc.function?.name) tcMap[tc.index].name = tc.function.name;
+            if (tc.function?.arguments) tcMap[tc.index].arguments += tc.function.arguments;
+            if (!tcMap[tc.index]._shown && tcMap[tc.index].id && tcMap[tc.index].name) {
+              tcMap[tc.index]._shown = true;
+              appendChatToolCall(tcMap[tc.index].id, tcMap[tc.index].name);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      hideChatSpinner();
+      if (err.name === "AbortError") return;
+      appendChatMsg("error", "Stream error: " + err.message);
+      return;
+    }
+
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
+
+    const toolCalls = Object.values(tcMap);
+    const assistantMsg = { role: "assistant", content: currentTextContent || null };
+    if (toolCalls.length) {
+      assistantMsg.tool_calls = toolCalls.map(tc => ({
+        id: tc.id, type: "function",
+        function: { name: tc.name, arguments: tc.arguments },
+      }));
+    }
+    chatState.convMsgs.push(assistantMsg);
+
+    if (toolCalls.length === 0) { hideChatSpinner(); return; }
+
+    for (const tc of toolCalls) {
+      let parsedArgs;
+      try { parsedArgs = JSON.parse(tc.arguments || "{}"); } catch { parsedArgs = {}; }
+      const result = await chatExecuteToolCall(tc.name, parsedArgs);
+      updateChatToolCall(tc.id, result, parsedArgs);
+      chatState.convMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
+    }
+    showChatSpinner();
+  }
+}
+
+async function* parseOpenAIStream(body) {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const data = line.slice(6).trim();
+        if (data === "[DONE]") return;
+        try { yield JSON.parse(data); } catch {}
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// ── Chat UI helpers ───────────────────────────────────────────────────────────
+
+function appendChatMsg(role, text) {
+  const container = document.getElementById("chat-messages");
+  const el = document.createElement("div");
+  el.className = `chat-msg chat-msg-${role}`;
+  if (role === "assistant") {
+    el.innerHTML = renderMarkdown(text);
+  } else {
+    el.textContent = text;
+  }
+  container.appendChild(el);
+  scrollChatBottom();
+  return el;
+}
+
+function nextGptModel() {
+  const sel = document.getElementById("chat-model-select");
+  const opts = Array.from(sel.options);
+  const current = `${chatState.provider}:${chatState.model}`;
+  const idx = opts.findIndex(o => o.value === current);
+  for (let i = idx + 1; i < opts.length; i++) {
+    if (opts[i].value.startsWith("github:openai/gpt")) return opts[i];
+  }
+  return null;
+}
+
+function appendRateLimitMsg() {
+  const next = nextGptModel();
+  const container = document.getElementById("chat-messages");
+  const el = document.createElement("div");
+  el.className = "chat-msg chat-msg-error";
+  if (next) {
+    el.innerHTML = `Rate limit reached. <a href="#" class="chat-rate-limit-link">Switch to ${escHtml(next.text)}</a>`;
+    el.querySelector("a").addEventListener("click", e => {
+      e.preventDefault();
+      const sel = document.getElementById("chat-model-select");
+      sel.value = next.value;
+      localStorage.setItem("webmcp-chat-model", next.value);
+      applyModelSelection(next.value);
+      el.remove();
+    });
+  } else {
+    el.textContent = "Rate limit reached. No fallback model available.";
+  }
+  container.appendChild(el);
+  scrollChatBottom();
+}
+
+function appendChatToolCall(toolId, toolName) {
+  const container = document.getElementById("chat-messages");
+  const el = document.createElement("details");
+  el.className = "chat-tool-call";
+  el.dataset.toolId = toolId;
+  el.innerHTML = `
+    <summary class="chat-tool-call-header">
+      <span class="chat-tool-call-icon">⚙</span>
+      <span class="chat-tool-call-name">${escHtml(toolName)}</span>
+      <span class="chat-tool-call-subtitle"></span>
+      <span class="chat-tool-call-status">running…</span>
+    </summary>
+    <div class="chat-tool-call-body">Waiting for result…</div>
+  `;
+  container.appendChild(el);
+  scrollChatBottom();
+}
+
+function updateChatToolCall(toolId, result, params) {
+  const el = document.querySelector(`.chat-tool-call[data-tool-id="${CSS.escape(toolId)}"]`);
+  if (!el) return;
+  const status = el.querySelector(".chat-tool-call-status");
+  const subtitle = el.querySelector(".chat-tool-call-subtitle");
+  const body = el.querySelector(".chat-tool-call-body");
+  const isError = !!result?.error;
+  if (status) {
+    status.textContent = isError ? "error" : "done";
+    status.className = `chat-tool-call-status ${isError ? "error" : "ok"}`;
+  }
+  if (subtitle && params) {
+    const key = params.topic || params.service || params.service_name || params.node || params.url || "";
+    if (key) subtitle.textContent = key;
+  }
+  if (body) body.textContent = JSON.stringify(result, null, 2);
+}
+
+function showChatSpinner() {
+  hideChatSpinner();
+  const container = document.getElementById("chat-messages");
+  const el = document.createElement("div");
+  el.className = "chat-spinner";
+  el.id = "chat-spinner";
+  el.innerHTML = "<span></span><span></span><span></span>";
+  container.appendChild(el);
+  scrollChatBottom();
+}
+
+function hideChatSpinner() {
+  document.getElementById("chat-spinner")?.remove();
+}
+
+function scrollChatBottom() {
+  const el = document.getElementById("chat-messages");
+  if (el) el.scrollTop = el.scrollHeight;
+}
+
+marked.use({ gfm: true, breaks: true });
+
+function renderMarkdown(text) {
+  if (!text) return "";
+  return DOMPurify.sanitize(marked.parse(text));
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+
+document.getElementById("connect-btn").addEventListener("click", () => {
+  if (state.connected) { disconnect(); return; }
+  const url = document.getElementById("url-input").value.trim();
+  if (url) connect(url);
+});
+
+document.getElementById("url-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("connect-btn").click();
+});
+
+document.getElementById("sidebar-filter").addEventListener("input", (e) => {
+  state.filter = e.target.value;
+  renderSidebar();
+});
+
+document.querySelectorAll("[data-section]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const section = btn.dataset.section;
+    state.sidebarCollapsed[section] = !state.sidebarCollapsed[section];
+    renderSidebar();
+  });
+});
+
+function initSysFilterBtn(btnId, stateKey) {
+  document.getElementById(btnId).addEventListener("click", () => {
+    state[stateKey] = !state[stateKey];
+    const btn = document.getElementById(btnId);
+    btn.setAttribute("aria-pressed", String(state[stateKey]));
+    btn.classList.toggle("active", state[stateKey]);
+    renderSidebar();
+    if (!state.selected) renderMainPlaceholder();
+  });
+}
+
+initSysFilterBtn("sys-filter-btn", "hideSystemServices");
+initSysFilterBtn("node-sys-filter-btn", "hideSystemNodes");
+
+document.getElementById("github-notice-dismiss").addEventListener("click", () => {
+  localStorage.setItem("webmcp-github-notice-dismissed", "1");
+  document.getElementById("github-notice").hidden = true;
+});
+
+document.getElementById("log-toggle").addEventListener("click", () => {
+  const body = document.getElementById("log-body");
+  const toggle = document.getElementById("log-toggle");
+  const willExpand = body.hidden;
+  body.hidden = !willExpand;
+  toggle.setAttribute("aria-expanded", String(willExpand));
+  toggle.textContent = willExpand ? "▲" : "▼";
+
+  if (willExpand) {
+    const list = document.getElementById("tool-log-list");
+    const traceList = document.getElementById("trace-list");
+    if (!traceList || traceList.hidden) {
+      list.innerHTML = "";
+      state.toolLog.forEach(entry => list.appendChild(createLogEntryEl(entry)));
+    } else {
+      renderTracePanel();
+    }
+  }
+});
+
+document.getElementById("log-tab-tools").addEventListener("click", () => {
+  const body = document.getElementById("log-body");
+  if (body.hidden) {
+    body.hidden = false;
+    const toggle = document.getElementById("log-toggle");
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.textContent = "▲";
+  }
+  setLogTab("tools");
+  const list = document.getElementById("tool-log-list");
+  list.innerHTML = "";
+  state.toolLog.forEach(entry => list.appendChild(createLogEntryEl(entry)));
+});
+
+document.getElementById("log-tab-trace").addEventListener("click", () => {
+  const body = document.getElementById("log-body");
+  if (body.hidden) {
+    body.hidden = false;
+    const toggle = document.getElementById("log-toggle");
+    toggle.setAttribute("aria-expanded", "true");
+    toggle.textContent = "▲";
+  }
+  setLogTab("trace");
+});
+
+// ── MCP connect button ────────────────────────────────────────────────────────
+
+document.getElementById("mcp-url-input").value = mcpState.url;
+document.getElementById("mcp-connect-btn").addEventListener("click", () => {
+  if (mcpClient.connected) {
+    disconnectMCP();
+  } else {
+    const url = document.getElementById("mcp-url-input").value.trim();
+    if (url) connectMCP(url);
+  }
+});
+
+// Wire up MCP trace events
+mcpClient.on("trace", appendTrace);
+
+registerWebMCPTools();
+initChat();
+
+// ── Topbar home button ────────────────────────────────────────────────────────
+
+document.getElementById("topbar-home-btn").addEventListener("click", () => {
+  state.selected = null;
+  renderSidebar();
+  renderMainPlaceholder();
+});
+
+// ── Rosbridge URL presets popover ─────────────────────────────────────────────
+
+const presetsBtn     = document.getElementById("url-presets-btn");
+const presetsPopover = document.getElementById("url-presets-popover");
+
+presetsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  presetsPopover.hidden = !presetsPopover.hidden;
+});
+
+presetsPopover.addEventListener("click", (e) => {
+  const item = e.target.closest("[data-url]");
+  if (!item) return;
+  document.getElementById("url-input").value = item.dataset.url;
+  presetsPopover.hidden = true;
+});
+
+// ── Settings popover ──────────────────────────────────────────────────────────
+
+const settingsBtn     = document.getElementById("settings-btn");
+const settingsPopover = document.getElementById("settings-popover");
+
+settingsBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = settingsPopover.hidden;
+  settingsPopover.hidden = !open;
+  settingsBtn.setAttribute("aria-expanded", String(open));
+});
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+const _darkMq = window.matchMedia("(prefers-color-scheme: dark)");
+
+function resolveTheme(preference) {
+  if (preference === "dark")  return "dark";
+  if (preference === "light") return "light";
+  return _darkMq.matches ? "dark" : "light";
+}
+
+function applyTheme(preference) {
+  localStorage.setItem("webmcp-theme", preference);
+  document.documentElement.setAttribute("data-theme", resolveTheme(preference));
+  document.querySelectorAll(".theme-opt").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.theme === preference);
+  });
+}
+
+_darkMq.addEventListener("change", () => {
+  const saved = localStorage.getItem("webmcp-theme") || "system";
+  if (saved === "system") applyTheme("system");
+});
+
+document.querySelectorAll(".theme-opt").forEach(btn => {
+  btn.addEventListener("click", () => applyTheme(btn.dataset.theme));
+});
+
+applyTheme(localStorage.getItem("webmcp-theme") || "system");
+
+// ── Chat model label ──────────────────────────────────────────────────────────
+
+function updateChatModelLabel() {
+  const sel = document.getElementById("chat-model-select");
+  const label = document.getElementById("chat-model-label");
+  if (!sel || !label) return;
+  const opt = sel.options[sel.selectedIndex];
+  const text = opt?.text || "";
+  // Shorten: "Claude Sonnet 4.6" → "Claude Sonnet 4.6", "GitHub · GPT-4.1" → "GPT-4.1"
+  label.textContent = text.replace(/^GitHub\s*·\s*/, "");
+}
+
+// ── Close popovers on outside click / Escape ──────────────────────────────────
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".settings-wrap")) {
+    settingsPopover.hidden = true;
+    settingsBtn.setAttribute("aria-expanded", "false");
+  }
+  if (!e.target.closest(".url-wrap")) {
+    presetsPopover.hidden = true;
+  }
+  const mcpPop = document.getElementById("mcp-tools-popover");
+  if (mcpPop && !mcpPop.hidden && !e.target.closest("#mcp-status-wrap")) mcpPop.hidden = true;
+  const wmPop = document.getElementById("webmcp-tools-popover");
+  if (wmPop && !wmPop.hidden && !e.target.closest("#webmcp-status-wrap")) wmPop.hidden = true;
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (!settingsPopover.hidden) {
+      settingsPopover.hidden = true;
+      settingsBtn.setAttribute("aria-expanded", "false");
+      settingsBtn.focus();
+    }
+    if (!presetsPopover.hidden) {
+      presetsPopover.hidden = true;
+      presetsBtn.focus();
+    }
+    const mcpPop = document.getElementById("mcp-tools-popover");
+    if (mcpPop && !mcpPop.hidden) mcpPop.hidden = true;
+    const wmPop = document.getElementById("webmcp-tools-popover");
+    if (wmPop && !wmPop.hidden) wmPop.hidden = true;
+  }
+});
+
+// ── Tools popovers (MCP + WebMCP) ─────────────────────────────────────────────
+
+function buildToolsPopoverContent(popover, titleText, explainHTML, tools) {
+  popover.innerHTML = "";
+  const header = document.createElement("div");
+  header.className = "webmcp-popover-header";
+  header.innerHTML = `
+    <div class="webmcp-popover-title">${escHtml(titleText)}</div>
+    <div class="webmcp-popover-explain">${explainHTML}</div>
+  `;
+  popover.appendChild(header);
+  const divider = document.createElement("div");
+  divider.className = "webmcp-popover-divider";
+  divider.textContent = "Tools";
+  popover.appendChild(divider);
+  tools.forEach(tool => {
+    const item = document.createElement("div");
+    item.className = "webmcp-popover-item";
+    item.innerHTML = `
+      <div class="webmcp-popover-name">${escHtml(tool.name)}</div>
+      <div class="webmcp-popover-desc">${escHtml(tool.description)}</div>
+    `;
+    popover.appendChild(item);
+  });
+}
+
+document.getElementById("mcp-status-row").addEventListener("click", () => {
+  const popover = document.getElementById("mcp-tools-popover");
+  if (!popover) return;
+  if (!popover.hidden) { popover.hidden = true; return; }
+  if (!mcpClient.connected) {
+    popover.innerHTML = `<div class="webmcp-popover-header"><div class="webmcp-popover-title">MCP · disconnected</div><div class="webmcp-popover-explain">Connect to an MCP server via Settings to see its tools here.</div></div>`;
+    popover.hidden = false;
+    return;
+  }
+  buildToolsPopoverContent(
+    popover,
+    `MCP · ${mcpClient.serverInfo?.name || "server"}`,
+    `${mcpClient.tools.length} tools from the Python MCP server. The <strong>AI chat panel</strong> calls these directly via the MCP HTTP endpoint.`,
+    mcpClient.tools
+  );
+  popover.hidden = false;
+});
+
+document.getElementById("webmcp-status-row").addEventListener("click", () => {
+  const popover = document.getElementById("webmcp-tools-popover");
+  if (!popover) return;
+  if (!popover.hidden) { popover.hidden = true; return; }
+  const activeTools = getActiveTools();
+  const toolsSource = mcpClient.connected ? `MCP server (${mcpClient.serverInfo?.name || "ros-mcp"})` : "browser JS";
+  const titleText = _webmcpActive ? "WebMCP · active" : "WebMCP · inactive";
+  const explainHTML = _webmcpActive
+    ? `These ${activeTools.length} tools (from ${toolsSource}) are registered with your browser's AI context, so native browser AI agents can call them directly. The <strong>AI chat panel</strong> uses the same tools independently via the Anthropic/GitHub API.`
+    : `The <strong>AI chat panel</strong> already uses these ${activeTools.length} tools (from ${toolsSource}) directly via the Anthropic/GitHub API — no flag needed. WebMCP would <em>also</em> expose them to native browser AI agents. Requires Chrome 146+ Canary → <code>chrome://flags/#webmcp-for-testing</code>.`;
+  buildToolsPopoverContent(popover, titleText, explainHTML, activeTools);
+  popover.hidden = false;
+});

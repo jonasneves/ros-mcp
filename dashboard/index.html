@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f0efeb">
+  <title>ROS WebMCP Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="apple-touch-icon" href="logo.jpg">
+  <meta property="og:title" content="ROS WebMCP Dashboard">
+  <meta property="og:description" content="Inspect and control ROS robots from the browser">
+  <meta property="og:image" content="logo.jpg">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js" as="script">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js" as="script">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js" as="script">
+</head>
+<body>
+<div class="app">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <button class="topbar-home-btn" id="topbar-home-btn" title="Go to main page" aria-label="Go to main page">
+      <img src="logo.jpg" class="topbar-logo" alt="ROS MCP logo" width="28" height="28">
+      <span class="topbar-title">ROS WebMCP</span>
+    </button>
+    <div class="status-row">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Disconnected</span>
+    </div>
+    <div class="status-wrap" id="mcp-status-wrap">
+      <button class="status-row" id="mcp-status-row" type="button" title="Show MCP server tools">
+        <span class="status-dot" id="mcp-status-dot"></span>
+        <span id="mcp-status-text">MCP</span>
+      </button>
+      <div class="tools-popover" id="mcp-tools-popover" hidden role="dialog" aria-label="MCP server tools"></div>
+    </div>
+    <div class="status-wrap" id="webmcp-status-wrap">
+      <button class="status-row" id="webmcp-status-row" type="button" title="Show WebMCP tools">
+        <span class="status-dot" id="webmcp-status-dot"></span>
+        <span id="webmcp-status-text">WebMCP</span>
+      </button>
+      <div class="tools-popover" id="webmcp-tools-popover" hidden role="dialog" aria-label="WebMCP tools"></div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <div class="url-wrap">
+      <input
+        class="url-input"
+        id="url-input"
+        type="text"
+        value="ws://localhost:9090"
+        aria-label="rosbridge WebSocket URL"
+        spellcheck="false"
+      >
+      <button class="url-presets-btn" id="url-presets-btn" aria-label="Rosbridge presets" title="Rosbridge presets">▾</button>
+      <div class="url-presets-popover" id="url-presets-popover" hidden role="listbox" aria-label="Rosbridge presets">
+        <button class="url-preset-item" data-url="ws://localhost:9090" role="option">
+          <span class="url-preset-label">localhost:9090</span>
+          <span class="url-preset-note">local · make turtlesim</span>
+        </button>
+      </div>
+    </div>
+    <button class="btn btn-primary btn-sm" id="connect-btn">Connect</button>
+    <div class="sims-wrap">
+      <button class="btn btn-sm" id="sims-btn" aria-expanded="false" aria-controls="sims-popover">Simulators <span style="font-size:15px;line-height:1">▾</span></button>
+      <div class="sims-popover" id="sims-popover" hidden role="dialog" aria-label="Connected simulators"></div>
+    </div>
+    <button class="btn btn-sm" id="chat-panel-toggle" aria-expanded="false" aria-controls="chat-panel">AI Chat</button>
+    <div class="settings-wrap">
+      <button class="settings-btn" id="settings-btn" aria-label="Settings" aria-expanded="false" aria-controls="settings-popover" title="Settings">
+        <svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true">
+          <path d="M6.08 1.5a.5.5 0 0 0-.495.43l-.198 1.382a4.5 4.5 0 0 0-.968.565L3.1 3.29a.5.5 0 0 0-.617.172L1.5 4.9a.5.5 0 0 0 .1.657l1.1.9A4.5 4.5 0 0 0 2.6 7.5c0 .328.034.648.1.943l-1.1.9a.5.5 0 0 0-.1.657l.984 1.438a.5.5 0 0 0 .617.172l1.319-.588c.298.213.617.398.968.565l.198 1.383a.5.5 0 0 0 .495.43h1.84a.5.5 0 0 0 .495-.43l.198-1.383a4.5 4.5 0 0 0 .968-.565l1.319.588a.5.5 0 0 0 .617-.172L13.4 10a.5.5 0 0 0-.1-.657l-1.1-.9c.066-.295.1-.615.1-.943s-.034-.648-.1-.943l1.1-.9A.5.5 0 0 0 13.5 4.9l-.984-1.438a.5.5 0 0 0-.617-.172l-1.319.588a4.5 4.5 0 0 0-.968-.565L9.415 1.93A.5.5 0 0 0 8.92 1.5H6.08ZM7.5 9.5a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z" fill="currentColor"/>
+        </svg>
+      </button>
+      <div class="settings-popover" id="settings-popover" hidden role="dialog" aria-label="Settings">
+
+        <div class="settings-section">
+          <div class="settings-section-label">MCP Server</div>
+          <div class="settings-auth-row">
+            <input type="text" class="chat-auth-input" id="mcp-url-input"
+                   value="http://localhost:9000" spellcheck="false" aria-label="MCP server URL">
+            <button class="btn btn-sm" id="mcp-connect-btn">Connect</button>
+          </div>
+          <div class="settings-hint">Start: <code>make server-http</code></div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-label">Appearance</div>
+          <div class="theme-toggle" role="group" aria-label="Color theme">
+            <button class="theme-opt" data-theme="system">System</button>
+            <button class="theme-opt" data-theme="light">Light</button>
+            <button class="theme-opt" data-theme="dark">Dark</button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <div class="settings-section-label">AI Model</div>
+          <select class="chat-model-select" id="chat-model-select" aria-label="Model">
+            <option value="anthropic:claude-sonnet-4-6">Claude Sonnet 4.6</option>
+            <option value="local:claude">Claude · Personal account</option>
+            <option value="github:openai/gpt-4.1">GitHub · GPT-4.1</option>
+            <option value="github:openai/gpt-4.1-mini">GitHub · GPT-4.1 mini</option>
+            <option value="github:openai/gpt-4.1-nano">GitHub · GPT-4.1 nano</option>
+            <option value="github:openai/gpt-5">GitHub · GPT-5</option>
+            <option value="github:openai/gpt-5-mini">GitHub · GPT-5 mini</option>
+          </select>
+        </div>
+
+        <form class="settings-section" id="chat-claude-bar" onsubmit="event.preventDefault()">
+          <div class="settings-section-label">Anthropic API Key</div>
+          <div class="settings-auth-row">
+            <input type="password" class="chat-auth-input" id="chat-api-key" placeholder="sk-ant-…" autocomplete="off" aria-label="Anthropic API key">
+            <button type="submit" class="btn btn-sm" id="chat-key-save">Save</button>
+          </div>
+        </form>
+
+        <div class="settings-section" id="chat-github-bar">
+          <!-- rendered by updateGitHubAuthBar() -->
+        </div>
+
+        <div class="github-notice settings-notice" id="github-notice" hidden>
+          <span>Tool calls may be less reliable than Claude.</span>
+          <button class="github-notice-dismiss" id="github-notice-dismiss" aria-label="Dismiss">✕</button>
+        </div>
+
+      </div>
+    </div>
+  </header>
+
+  <!-- Body -->
+  <div class="body">
+
+    <!-- Sidebar -->
+    <div class="sidebar-wrap">
+      <div class="sidebar-filter-row">
+        <input
+          class="sidebar-filter-input"
+          id="sidebar-filter"
+          type="search"
+          placeholder="Filter…"
+          aria-label="Filter topics, nodes, services"
+          spellcheck="false"
+        >
+      </div>
+      <nav class="sidebar" aria-label="ROS entities">
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <button class="sidebar-heading" id="section-toggle-topics" data-section="topics" aria-expanded="true">Topics</button>
+            <span class="sidebar-chevron"></span>
+          </div>
+          <div id="topics-list">
+            <div class="sidebar-empty">Not connected</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <button class="sidebar-heading" id="section-toggle-nodes" data-section="nodes" aria-expanded="true">Nodes</button>
+            <button class="sys-filter-btn" id="node-sys-filter-btn" title="Hide system nodes" aria-pressed="false">sys</button>
+            <span class="sidebar-chevron"></span>
+          </div>
+          <div id="nodes-list">
+            <div class="sidebar-empty">Not connected</div>
+          </div>
+        </div>
+
+        <div class="sidebar-section">
+          <div class="sidebar-section-head">
+            <button class="sidebar-heading" id="section-toggle-services" data-section="services" aria-expanded="true">Services</button>
+            <button class="sys-filter-btn" id="sys-filter-btn" title="Hide system services" aria-pressed="false">sys</button>
+            <span class="sidebar-chevron"></span>
+          </div>
+          <div id="services-list">
+            <div class="sidebar-empty">Not connected</div>
+          </div>
+        </div>
+
+      </nav>
+    </div>
+
+    <!-- Main column -->
+    <div class="main-col">
+
+      <!-- Pinned topics strip -->
+      <div class="pinned-row" id="pinned-row" hidden aria-label="Pinned topics"></div>
+
+      <!-- Detail panel -->
+      <main class="main" id="main-panel" aria-live="polite">
+        <div class="panel-placeholder" id="panel-placeholder">
+          <div>Connect to rosbridge to get started.</div>
+        </div>
+      </main>
+
+      <!-- Tool call log + Protocol Trace -->
+      <div class="log-panel" id="log-panel">
+        <div class="log-header">
+          <button class="log-tab active" id="log-tab-tools">
+            Tool Log <span class="log-badge" id="tool-log-badge" hidden>0</span>
+          </button>
+          <button class="log-tab" id="log-tab-trace">
+            Protocol <span class="log-badge" id="trace-badge" hidden>0</span>
+          </button>
+          <span style="flex:1"></span>
+          <button class="log-expand-btn" id="log-toggle" aria-expanded="false" aria-controls="log-body">▼</button>
+        </div>
+        <div class="log-body" id="log-body" hidden>
+          <div class="log-list" id="tool-log-list"></div>
+          <div class="trace-list" id="trace-list" hidden></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- AI Chat panel -->
+    <aside class="chat-panel" id="chat-panel" hidden>
+      <div class="chat-header">
+        <span class="chat-header-title">AI Chat</span>
+        <span class="chat-model-label" id="chat-model-label">Claude</span>
+        <button class="btn btn-sm" id="chat-clear">Clear</button>
+      </div>
+      <div class="chat-messages" id="chat-messages" aria-live="polite" aria-label="Chat messages"></div>
+      <div class="chat-input-area">
+        <div class="chat-input-wrap">
+          <textarea class="chat-input" id="chat-input" placeholder="Ask about your ROS setup… (↵ to send, ⇧↵ for newline)" rows="3" aria-label="Chat message"></textarea>
+          <button class="chat-send-btn" id="chat-send" aria-label="Send message" title="Send (⌘↵)">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 13V3M3.5 7.5L8 3l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <button class="chat-abort-btn" id="chat-abort" hidden aria-label="Stop generating" title="Stop">
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <rect width="11" height="11" rx="2" fill="currentColor"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container" aria-live="assertive" aria-atomic="true"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/roslib@1/build/roslib.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+<script src="ros-webmcp.js"></script>
+</body>
+</html>

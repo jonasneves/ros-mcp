@@ -1,0 +1,15 @@
+<CycloneDDS>
+  <Domain>
+    <General><AllowMulticast>false</AllowMulticast></General>
+    <Discovery>
+      <ParticipantIndex>auto</ParticipantIndex>
+      <Peers>
+        <Peer Address="localhost"/>
+        <Peer Address="rosbridge"/>
+        <Peer Address="turtlesim1"/>
+        <Peer Address="turtlesim2"/>
+        <Peer Address="turtlesim3"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

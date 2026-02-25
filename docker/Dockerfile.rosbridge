@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Minimal rosbridge-only image — no simulation, no GUI.
+FROM ros:jazzy-ros-base
+
+ENV ROS_DISTRO=jazzy
+SHELL ["/bin/bash", "-c"]
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y \
+    ros-jazzy-rosbridge-suite \
+    ros-jazzy-rmw-cyclonedds-cpp \
+    ros-jazzy-turtlesim
+
+COPY cyclonedds.xml /cyclonedds.xml
+
+WORKDIR /ros2_ws
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["/bin/bash"]

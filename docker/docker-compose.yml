@@ -1,0 +1,76 @@
+x-turtlesim: &turtlesim
+  image: ghcr.io/ros-mcp/ros-mcp/turtlesim:latest
+  build:
+    context: .
+    dockerfile: Dockerfile.turtlesim
+  environment: &turtlesim-env
+    ROS_DISTRO: jazzy
+    CYCLONEDDS_URI: file:///cyclonedds.xml
+  volumes:
+    - ./launch_turtlesim.launch.py:/ros2_ws/launch/launch_turtlesim.launch.py:ro
+  stdin_open: true
+  tty: true
+  command: ["ros2", "launch", "/ros2_ws/launch/launch_turtlesim.launch.py"]
+
+services:
+  rosbridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.rosbridge
+    container_name: rosbridge
+    environment:
+      ROS_DISTRO: jazzy
+      RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+      CYCLONEDDS_URI: file:///cyclonedds.xml
+    volumes:
+      - ./launch_rosbridge.launch.py:/ros2_ws/launch/launch_rosbridge.launch.py:ro
+    ports:
+      - "9090:9090"
+    command: ["ros2", "launch", "/ros2_ws/launch/launch_rosbridge.launch.py"]
+
+  ros-mcp:
+    image: ghcr.io/ros-mcp/ros-mcp/ros-mcp:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.mcp
+    container_name: ros-mcp
+    environment:
+      ROSBRIDGE_IP: rosbridge
+      ROSBRIDGE_PORT: 9090
+    ports:
+      - "9000:9000"
+    depends_on:
+      - rosbridge
+      - turtlesim1
+      - turtlesim2
+      - turtlesim3
+
+  turtlesim1:
+    <<: *turtlesim
+    container_name: ros2-turtlesim-1
+    environment:
+      <<: *turtlesim-env
+      NOVNC_PORT: 8080
+      TURTLESIM_NAMESPACE: ts1
+    ports:
+      - "8080:8080"
+
+  turtlesim2:
+    <<: *turtlesim
+    container_name: ros2-turtlesim-2
+    environment:
+      <<: *turtlesim-env
+      NOVNC_PORT: 8081
+      TURTLESIM_NAMESPACE: ts2
+    ports:
+      - "8081:8081"
+
+  turtlesim3:
+    <<: *turtlesim
+    container_name: ros2-turtlesim-3
+    environment:
+      <<: *turtlesim-env
+      NOVNC_PORT: 8082
+      TURTLESIM_NAMESPACE: ts3
+    ports:
+      - "8082:8082"

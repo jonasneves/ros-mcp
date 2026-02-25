@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+
+# Stage 1: export locked deps using uv on the build platform (native, no QEMU).
+# uv is a compiled Rust binary that segfaults under QEMU cross-emulation.
+FROM --platform=$BUILDPLATFORM python:3.13-slim AS builder
+RUN pip install uv
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN uv export --no-dev --no-emit-project > requirements.txt
+
+FROM python:3.13-slim
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0
+
+WORKDIR /app
+
+COPY --from=builder /app/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY pyproject.toml server.json ./
+COPY src/ src/
+COPY server.py .
+COPY robots/ robots/
+
+RUN pip install --no-cache-dir --no-deps .
+
+CMD ["python", "server.py", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "9000"]

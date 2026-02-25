@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs:*)",
+      "Bash(gh repo view:*)",
+      "Bash(git clone:*)",
+      "Bash(gh repo create:*)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp remote set-url:*)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp remote -v)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp push origin --all)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp push origin --tags)",
+      "Bash(git init:*)",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp.github.io add .github/workflows/deploy.yml)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp.github.io commit -m \"ci: add webmcp deploy workflow\")",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp.github.io remote add origin git@github.com:ros-mcp/ros-mcp.github.io.git)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp.github.io push origin main deploy)",
+      "Bash(gh api:*)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp.github.io commit -m \"ci: add webmcp deploy workflow\" --amend)",
+      "Bash(git -C ~/Github/ros-mcp/ros-mcp.github.io push origin deploy --force-with-lease)",
+      "Bash(git -C ~/Github/herdbot/ros-mcp-server diff examples/5_docker_turtlesim/docker-compose.yml)"
+    ]
+  }
+}
