@@ -5,12 +5,14 @@
 
 Connect AI agents to ROS robots. Exposes topics, services, nodes, parameters, and actions as MCP tools — usable from Claude Desktop, Claude Code, Cursor, or any MCP-compatible client.
 
-Two ways to use it:
+Four ways to use it:
 
-| Mode | How | Best for |
+| Mode | Transport | Best for |
 |---|---|---|
-| **Browser dashboard** | Open [ros-mcp.github.io](https://ros-mcp.github.io), enter rosbridge URL | Quickest start, no install |
-| **Python MCP server** | Clone and run with `uv` | Claude Desktop / Cursor / local agents |
+| **Browser dashboard** | WebSocket via roslibjs | Quickest start, no install |
+| **Python server — stdio** | stdio | Claude Code (local) |
+| **Python server — HTTP** | Streamable HTTP on :9000 | Claude Desktop, Cursor, remote agents |
+| **Remote CI server** | HTTP (URL from git notes) | Shared / cloud-hosted setup |
 
 ## How it works
 
@@ -24,15 +26,24 @@ The browser dashboard skips the Python server entirely — roslibjs connects dir
 
 Open [ros-mcp.github.io](https://ros-mcp.github.io), enter your rosbridge WebSocket URL, and connect. No install required.
 
-### Python server
+### Python server — stdio (Claude Code)
 
 ```bash
 git clone https://github.com/jonasneves/ros-mcp
 cd ros-mcp
-ROSBRIDGE_IP=<robot-ip> make server-http
+make configure        # registers as a local stdio MCP in Claude Code
 ```
 
-Add to your MCP client config (`claude_desktop_config.json`, `.cursor/mcp.json`, etc.):
+### Python server — HTTP (Claude Desktop / Cursor)
+
+```bash
+git clone https://github.com/jonasneves/ros-mcp
+cd ros-mcp
+ROSBRIDGE_IP=<robot-ip> make server-http   # starts server on :9000
+make configure-desktop                      # edits claude_desktop_config.json
+```
+
+Or add manually to `.cursor/mcp.json` or any MCP client config:
 
 ```json
 {
@@ -43,16 +54,12 @@ Add to your MCP client config (`claude_desktop_config.json`, `.cursor/mcp.json`,
 }
 ```
 
-**Claude Code** — adds the server as a local stdio MCP:
+### Remote CI server
+
+If the server is deployed via CI, its URL is stored in git notes. Configure any MCP client to point at it:
 
 ```bash
-make configure
-```
-
-**Claude Desktop** — edits `claude_desktop_config.json` automatically:
-
-```bash
-make configure-desktop
+make configure-remote
 ```
 
 ### Docker demo (3× Turtlesim)
