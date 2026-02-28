@@ -30,7 +30,7 @@ def register_node_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        if response and "values" in response:
+        if "values" in response:
             nodes = response["values"].get("nodes", [])
             return {"nodes": nodes, "node_count": len(nodes)}
 
@@ -63,10 +63,9 @@ def register_node_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        topics, types = [], []
-        if response and "values" in response:
-            topics = response["values"].get("topics", [])
-            types  = response["values"].get("types", [])
+        values = response.get("values", {})
+        topics = values.get("topics", [])
+        types = values.get("types", [])
 
         robots = [
             {"cmd_vel_topic": t, "cmd_vel_type": ty}
@@ -104,8 +103,7 @@ def register_node_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        # rosapi uses "publishing" and "subscribing" field names
-        values = response.get("values", {}) if response else {}
+        values = response.get("values", {})
         publishers = values.get("publishing", [])
         subscribers = values.get("subscribing", [])
         services = values.get("services", [])

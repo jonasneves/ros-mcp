@@ -63,7 +63,11 @@
       "Bash(claude mcp:*)",
       "Bash(docker exec:*)",
       "Bash(docker run:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(gh auth:*)",
+      "Bash(curl:*)",
+      "Bash(echo done:*)",
+      "Bash(do python3:*)"
     ]
   }
 }

@@ -13,7 +13,8 @@ def register_connection_tools(
 ) -> None:
     @mcp.tool(
         description=(
-            "Connect to the robot by setting the IP/port. This tool also tests connectivity to confirm that the robot is reachable and the port is open."
+            "Connect to the robot by setting the IP/port. This tool also tests connectivity to confirm that the robot is reachable and the port is open.\n"
+            "Example:\nconnect_to_robot(ip='192.168.1.100', port=9090)"
         ),
         annotations=ToolAnnotations(
             title="Connect to Robot",
@@ -26,15 +27,14 @@ def register_connection_tools(
         ping_timeout: float = 2.0,
         port_timeout: float = 2.0,
     ) -> dict:
-        actual_ip = str(ip).strip() if ip else default_ip
-        actual_port = int(port) if port else default_port
+        resolved_ip = str(ip).strip() or default_ip
+        resolved_port = int(port) if port else default_port
 
-        ws_manager.set_ip(actual_ip, actual_port)
-        ping_result = ping_ip_and_port(actual_ip, actual_port, ping_timeout, port_timeout)
+        ws_manager.set_ip(resolved_ip, resolved_port)
 
         return {
-            "message": f"WebSocket IP set to {actual_ip}:{actual_port}",
-            "connectivity_test": ping_result,
+            "message": f"WebSocket IP set to {resolved_ip}:{resolved_port}",
+            "connectivity_test": ping_ip_and_port(resolved_ip, resolved_port, ping_timeout, port_timeout),
         }
 
     @mcp.tool(

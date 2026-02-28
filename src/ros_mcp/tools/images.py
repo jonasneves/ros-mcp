@@ -8,15 +8,7 @@ from PIL import Image as PILImage
 
 
 def convert_expects_image_hint(expects_image: str) -> bool | None:
-    """Convert string-based expects_image hint to boolean for internal use.
-
-    Args:
-        expects_image: "true" (prioritize image parsing), "false" (skip image
-            detection), or "auto" / any other value (auto-detect).
-
-    Returns:
-        True, False, or None (auto-detect) for use with parse_input.
-    """
+    """Convert a string expects_image hint ("true"/"false"/"auto") to bool | None."""
     if expects_image == "true":
         return True
     if expects_image == "false":
@@ -24,12 +16,11 @@ def convert_expects_image_hint(expects_image: str) -> bool | None:
     return None
 
 
-def _encode_image_to_imagecontent(image) -> ImageContent:
+def _encode_image_to_imagecontent(image: PILImage.Image) -> ImageContent:
+    """Encode a PIL image as JPEG and return MCP ImageContent."""
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG")
-    img_bytes = buffer.getvalue()
-    img_obj = Image(data=img_bytes, format="jpeg")
-    return img_obj.to_image_content()
+    return Image(data=buffer.getvalue(), format="jpeg").to_image_content()
 
 
 def register_image_tools(

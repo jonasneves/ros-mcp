@@ -8,8 +8,7 @@ const { request: httpsRequest } = require("https");
 const fs = require("fs");
 const path = require("path");
 
-// Minimal .env loader (no dotenv dependency).
-// Matches KEY=value lines, strips optional surrounding quotes.
+// Minimal .env loader — no dotenv dependency
 const envFile = path.join(__dirname, ".env");
 if (fs.existsSync(envFile)) {
   for (const line of fs.readFileSync(envFile, "utf8").split("\n")) {
@@ -28,28 +27,28 @@ if (!token) {
   process.exit(1);
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, anthropic-version, anthropic-beta",
+};
+
 let reqCount = 0;
 setInterval(() => { reqCount = 0; }, 60_000);
 
-function forwardErrorResponse(apiRes, res, cors) {
+function forwardErrorResponse(apiRes, res) {
   let body = "";
   apiRes.on("data", (chunk) => { body += chunk; });
   apiRes.on("end", () => {
     console.error("API error:", body);
-    res.writeHead(apiRes.statusCode, cors);
+    res.writeHead(apiRes.statusCode, CORS_HEADERS);
     res.end(body);
   });
 }
 
 createServer((req, res) => {
-  const cors = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, anthropic-version, anthropic-beta",
-  };
-
   if (req.method === "OPTIONS") {
-    res.writeHead(204, cors);
+    res.writeHead(204, CORS_HEADERS);
     res.end();
     return;
   }
@@ -62,7 +61,7 @@ createServer((req, res) => {
 
   if (++reqCount > MAX_RPM) {
     console.warn(`Rate limit hit (${MAX_RPM} req/min)`);
-    res.writeHead(429, cors);
+    res.writeHead(429, CORS_HEADERS);
     res.end();
     return;
   }
@@ -74,7 +73,7 @@ createServer((req, res) => {
     try {
       msg = JSON.parse(body);
     } catch {
-      res.writeHead(400);
+      res.writeHead(400, CORS_HEADERS);
       res.end("Bad JSON");
       return;
     }
@@ -98,10 +97,10 @@ createServer((req, res) => {
     }, apiRes => {
       console.log(`← ${apiRes.statusCode}`);
       if (apiRes.statusCode !== 200) {
-        return forwardErrorResponse(apiRes, res, cors);
+        return forwardErrorResponse(apiRes, res);
       }
       res.writeHead(200, {
-        ...cors,
+        ...CORS_HEADERS,
         "content-type": apiRes.headers["content-type"] ?? "text/event-stream",
       });
       apiRes.pipe(res);
@@ -109,7 +108,7 @@ createServer((req, res) => {
 
     apiReq.on("error", (e) => {
       console.error("Request failed:", e.message);
-      if (!res.headersSent) res.writeHead(500, cors);
+      if (!res.headersSent) res.writeHead(500, CORS_HEADERS);
       res.end();
     });
 

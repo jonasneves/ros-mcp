@@ -1,4 +1,3 @@
-import json
 import math
 import time
 
@@ -6,57 +5,66 @@ from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from ros_mcp.tools.images import convert_expects_image_hint
-from ros_mcp.utils.websocket import WebSocketManager, extract_service_failure_error, parse_input
+from ros_mcp.utils.websocket import (
+    WebSocketManager,
+    extract_service_failure_error,
+    parse_input,
+    parse_json,
+)
 
 
 def _parse_status_error(raw_response: str | bytes | None) -> str | None:
-    """Parse a raw rosbridge response and return the error message if it is a status error.
-
-    Returns None when the response is not a status-level error (including when
-    *raw_response* is None or not valid JSON).
-    """
-    if raw_response is None:
+    """Return the error message if raw_response is a rosbridge status error, else None."""
+    msg_data = parse_json(raw_response)
+    if msg_data is None:
         return None
-    try:
-        msg_data = json.loads(raw_response)
-        if msg_data.get("op") == "status" and msg_data.get("level") == "error":
-            return msg_data.get("msg", "Unknown error")
-    except (json.JSONDecodeError, TypeError):
-        pass
+    if msg_data.get("op") == "status" and msg_data.get("level") == "error":
+        return msg_data.get("msg", "Unknown error")
     return None
 
 
 def _validate_nonneg_float(value, name: str) -> tuple[float, dict | None]:
-    """Coerce *value* to float and check >= 0. Returns (coerced, error_dict_or_None)."""
+    """Coerce to float >= 0. Returns (coerced_value, error_dict_or_None)."""
     try:
         value = float(value)
-        if value < 0:
-            return 0.0, {"error": f"{name} must be >= 0"}
     except (ValueError, TypeError):
         return 0.0, {"error": f"{name} must be a number"}
+    if value < 0:
+        return 0.0, {"error": f"{name} must be >= 0"}
     return value, None
 
 
 def _validate_pos_int(value, name: str) -> tuple[int, dict | None]:
-    """Coerce *value* to int and check >= 1. Returns (coerced, error_dict_or_None)."""
+    """Coerce to int >= 1. Returns (coerced_value, error_dict_or_None)."""
     try:
         value = int(value)
-        if value < 1:
-            return 0, {"error": f"{name} must be an integer >= 1"}
     except (ValueError, TypeError):
         return 0, {"error": f"{name} must be an integer"}
+    if value < 1:
+        return 0, {"error": f"{name} must be an integer >= 1"}
     return value, None
 
 
 def _validate_nonneg_int(value, name: str) -> tuple[int, dict | None]:
-    """Coerce *value* to int and check >= 0. Returns (coerced, error_dict_or_None)."""
+    """Coerce to int >= 0. Returns (coerced_value, error_dict_or_None)."""
     try:
         value = int(value)
-        if value < 0:
-            return 0, {"error": f"{name} must be an integer >= 0"}
     except (ValueError, TypeError):
         return 0, {"error": f"{name} must be an integer"}
+    if value < 0:
+        return 0, {"error": f"{name} must be an integer >= 0"}
     return value, None
+
+
+_TWIST_STOP = {"linear": {"x": 0.0}, "angular": {"z": 0.0}}
+_STAMPED_HEADER = {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": ""}
+
+
+def _wrap_twist(msg_type: str, twist: dict) -> dict:
+    """Wrap a Twist dict in a TwistStamped envelope when the msg_type requires it."""
+    if "TwistStamped" in msg_type:
+        return {"header": _STAMPED_HEADER, "twist": twist}
+    return twist
 
 
 def register_topic_tools(
@@ -66,25 +74,18 @@ def register_topic_tools(
     def _publish_motion(
         topic: str, msg_type: str, velocity_msg: dict, duration: float
     ) -> str | None:
-        """Advertise, publish velocity, sleep, publish stop, unadvertise.
+        """Advertise, publish velocity for duration, publish stop, unadvertise.
 
         Returns an error string on failure, or None on success.
         """
         send_error = ws_manager.send({"op": "advertise", "topic": topic, "type": msg_type})
         if send_error:
             return f"Failed to advertise topic: {send_error}"
-        # TwistStamped wraps the Twist under "twist:" with a header
-        stamped = "TwistStamped" in msg_type
-        if stamped:
-            header = {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": ""}
-            velocity_msg = {"header": header, "twist": velocity_msg}
-            stop_msg = {"header": header, "twist": {"linear": {"x": 0.0}, "angular": {"z": 0.0}}}
-        else:
-            stop_msg = {"linear": {"x": 0.0}, "angular": {"z": 0.0}}
+
         try:
-            ws_manager.send({"op": "publish", "topic": topic, "msg": velocity_msg})
+            ws_manager.send({"op": "publish", "topic": topic, "msg": _wrap_twist(msg_type, velocity_msg)})
             time.sleep(duration)
-            ws_manager.send({"op": "publish", "topic": topic, "msg": stop_msg})
+            ws_manager.send({"op": "publish", "topic": topic, "msg": _wrap_twist(msg_type, _TWIST_STOP)})
         finally:
             ws_manager.send({"op": "unadvertise", "topic": topic})
         return None
@@ -111,7 +112,7 @@ def register_topic_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        if response and "values" in response:
+        if "values" in response:
             values = response["values"]
             topics = values.get("topics", [])
             types = values.get("types", [])
@@ -146,7 +147,7 @@ def register_topic_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        if response and "values" in response:
+        if "values" in response:
             topic_type = response["values"].get("type", "")
             if topic_type:
                 return {"topic": topic, "type": topic_type}
@@ -174,43 +175,40 @@ def register_topic_tools(
             "type": "unknown",
             "publishers": [],
             "subscribers": [],
-            "publisher_count": 0,
-            "subscriber_count": 0,
         }
 
+        topic_slug = topic.replace("/", "_")
+
         with ws_manager:
-            type_message = {
+            type_resp = ws_manager.request({
                 "op": "call_service",
                 "service": "/rosapi/topic_type",
                 "type": "rosapi/TopicType",
                 "args": {"topic": topic},
-                "id": f"get_topic_type_{topic.replace('/', '_')}",
-            }
-            type_response = ws_manager.request(type_message)
-            if type_response and "values" in type_response:
-                result["type"] = type_response["values"].get("type", "unknown")
+                "id": f"get_topic_type_{topic_slug}",
+            })
+            if "values" in type_resp:
+                result["type"] = type_resp["values"].get("type", "unknown")
 
-            publishers_message = {
+            pub_resp = ws_manager.request({
                 "op": "call_service",
                 "service": "/rosapi/publishers",
                 "type": "rosapi/Publishers",
                 "args": {"topic": topic},
-                "id": f"get_publishers_{topic.replace('/', '_')}",
-            }
-            publishers_response = ws_manager.request(publishers_message)
-            if publishers_response and "values" in publishers_response:
-                result["publishers"] = publishers_response["values"].get("publishers", [])
+                "id": f"get_publishers_{topic_slug}",
+            })
+            if "values" in pub_resp:
+                result["publishers"] = pub_resp["values"].get("publishers", [])
 
-            subscribers_message = {
+            sub_resp = ws_manager.request({
                 "op": "call_service",
                 "service": "/rosapi/subscribers",
                 "type": "rosapi/Subscribers",
                 "args": {"topic": topic},
-                "id": f"get_subscribers_{topic.replace('/', '_')}",
-            }
-            subscribers_response = ws_manager.request(subscribers_message)
-            if subscribers_response and "values" in subscribers_response:
-                result["subscribers"] = subscribers_response["values"].get("subscribers", [])
+                "id": f"get_subscribers_{topic_slug}",
+            })
+            if "values" in sub_resp:
+                result["subscribers"] = sub_resp["values"].get("subscribers", [])
 
         result["publisher_count"] = len(result["publishers"])
         result["subscriber_count"] = len(result["subscribers"])
@@ -249,7 +247,7 @@ def register_topic_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        if response and "values" in response:
+        if "values" in response:
             typedefs = response["values"].get("typedefs", [])
             if typedefs:
                 structure = {}
@@ -669,20 +667,11 @@ def register_topic_tools(
                 return {"error": f"Robot {i}: linear_x and angular_z must be numbers"}
 
             base_vel = {"linear": {"x": linear_x}, "angular": {"z": angular_z}}
-            base_stop = {"linear": {"x": 0.0}, "angular": {"z": 0.0}}
-            if "TwistStamped" in msg_type:
-                header = {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": ""}
-                vel_msg = {"header": header, "twist": base_vel}
-                stop_msg = {"header": header, "twist": base_stop}
-            else:
-                vel_msg = base_vel
-                stop_msg = base_stop
-
             prepared.append({
                 "topic": topic,
                 "msg_type": msg_type,
-                "vel_msg": vel_msg,
-                "stop_msg": stop_msg,
+                "vel_msg": _wrap_twist(msg_type, base_vel),
+                "stop_msg": _wrap_twist(msg_type, _TWIST_STOP),
             })
 
         with ws_manager:
@@ -737,16 +726,15 @@ def register_topic_tools(
             if status_err:
                 return {"error": f"Advertise failed: {status_err}"}
 
-            send_error = ws_manager.send({"op": "publish", "topic": topic, "msg": msg})
-            if send_error:
-                ws_manager.send({"op": "unadvertise", "topic": topic})
-                return {"error": f"Failed to publish message: {send_error}"}
+            try:
+                send_error = ws_manager.send({"op": "publish", "topic": topic, "msg": msg})
+                if send_error:
+                    return {"error": f"Failed to publish message: {send_error}"}
 
-            status_err = _parse_status_error(ws_manager.receive(timeout=1.0))
-            if status_err:
+                status_err = _parse_status_error(ws_manager.receive(timeout=1.0))
+                if status_err:
+                    return {"error": f"Publish failed: {status_err}"}
+            finally:
                 ws_manager.send({"op": "unadvertise", "topic": topic})
-                return {"error": f"Publish failed: {status_err}"}
-
-            ws_manager.send({"op": "unadvertise", "topic": topic})
 
         return {"success": True}

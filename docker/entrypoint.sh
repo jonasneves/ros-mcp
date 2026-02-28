@@ -11,7 +11,6 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
 export LIBGL_ALWAYS_SOFTWARE=1
 Xvfb :99 -screen 0 1280x800x24 -ac +extension GLX +render -noreset 2>/dev/null &
 
-# Wait for Xvfb socket instead of sleeping
 until [ -e /tmp/.X11-unix/X99 ]; do sleep 0.1; done
 export DISPLAY=:99
 

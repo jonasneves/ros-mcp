@@ -45,7 +45,7 @@ def register_service_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        if response and "values" in response:
+        if "values" in response:
             services = response["values"].get("services", [])
             return {"services": services, "service_count": len(services)}
 
@@ -78,7 +78,7 @@ def register_service_tools(
         if err := extract_service_failure_error(response):
             return err
 
-        if response and "values" in response:
+        if "values" in response:
             service_type = response["values"].get("type", "")
             if service_type:
                 return {"service": service, "type": service_type}
@@ -107,66 +107,43 @@ def register_service_tools(
             "request": {},
             "response": {},
             "providers": [],
-            "provider_count": 0,
         }
 
         with ws_manager:
-            type_message = {
+            type_resp = ws_manager.request({
                 "op": "call_service",
                 "service": "/rosapi/service_type",
                 "type": "rosapi_msgs/srv/ServiceType",
                 "args": {"service": service},
                 "id": f"get_service_type_{service.replace('/', '_')}",
-            }
+            })
+            service_type = type_resp.get("values", {}).get("type", "")
+            if not service_type:
+                return {"error": f"Service {service} does not exist or has no type"}
+            result["type"] = service_type
 
-            type_response = ws_manager.request(type_message)
-            if type_response and "values" in type_response:
-                service_type = type_response["values"].get("type", "")
-                if service_type:
-                    result["type"] = service_type
-                else:
-                    return {"error": f"Service {service} does not exist or has no type"}
-            else:
-                return {"error": f"Failed to get type for service {service}"}
+            type_slug = service_type.replace("/", "_")
 
-            request_message = {
-                "op": "call_service",
-                "service": "/rosapi/service_request_details",
-                "type": "rosapi_msgs/srv/ServiceRequestDetails",
-                "args": {"type": result["type"]},
-                "id": f"get_service_details_request_{result['type'].replace('/', '_')}",
-            }
-
-            request_response = ws_manager.request(request_message)
-            if request_response and "values" in request_response:
-                typedefs = request_response["values"].get("typedefs", [])
+            for direction in ("request", "response"):
+                detail_resp = ws_manager.request({
+                    "op": "call_service",
+                    "service": f"/rosapi/service_{direction}_details",
+                    "type": f"rosapi_msgs/srv/Service{direction.capitalize()}Details",
+                    "args": {"type": service_type},
+                    "id": f"get_service_details_{direction}_{type_slug}",
+                })
+                typedefs = detail_resp.get("values", {}).get("typedefs", [])
                 if typedefs:
-                    result["request"] = _parse_typedef_fields(typedefs)
+                    result[direction] = _parse_typedef_fields(typedefs)
 
-            response_message = {
-                "op": "call_service",
-                "service": "/rosapi/service_response_details",
-                "type": "rosapi_msgs/srv/ServiceResponseDetails",
-                "args": {"type": result["type"]},
-                "id": f"get_service_details_response_{result['type'].replace('/', '_')}",
-            }
-
-            response_response = ws_manager.request(response_message)
-            if response_response and "values" in response_response:
-                typedefs = response_response["values"].get("typedefs", [])
-                if typedefs:
-                    result["response"] = _parse_typedef_fields(typedefs)
-
-            provider_message = {
+            provider_resp = ws_manager.request({
                 "op": "call_service",
                 "service": "/rosapi/service_node",
                 "type": "rosapi_msgs/srv/ServiceNode",
                 "args": {"service": service},
-                "id": f"get_service_providers_request_{service.replace('/', '_')}",
-            }
-
-            provider_response = ws_manager.request(provider_message)
-            node = extract_provider_node(provider_response)
+                "id": f"get_service_providers_{service.replace('/', '_')}",
+            })
+            node = extract_provider_node(provider_resp)
             result["providers"] = [node] if node else []
             result["provider_count"] = len(result["providers"])
 
@@ -218,14 +195,6 @@ def register_service_tools(
 
         if err := extract_service_failure_error(response):
             return {"service": service_name, "service_type": service_type, "success": False, **err}
-
-        if not response:
-            return {
-                "service": service_name,
-                "service_type": service_type,
-                "success": False,
-                "error": "No response received from service call",
-            }
 
         if response.get("op") == "service_response":
             return {

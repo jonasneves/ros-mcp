@@ -1,3 +1,5 @@
+import { GITHUB_CLIENT_ID, OAUTH_CALLBACK_ORIGIN, connectGitHub } from 'https://neevs.io/auth/connect.js';
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 const state = {
@@ -226,15 +228,15 @@ function isSystemNode(name) {
     name.startsWith("/_");
 }
 
+const _SYSTEM_SERVICE_SUFFIXES = [
+  "/describe_parameters", "/get_parameter_types", "/get_parameters",
+  "/list_parameters", "/set_parameters", "/set_parameters_atomically",
+];
+
 function isSystemService(name) {
   return name.startsWith("/rosapi/") ||
     name.startsWith("/rosbridge_websocket/") ||
-    name.endsWith("/describe_parameters") ||
-    name.endsWith("/get_parameter_types") ||
-    name.endsWith("/get_parameters") ||
-    name.endsWith("/list_parameters") ||
-    name.endsWith("/set_parameters") ||
-    name.endsWith("/set_parameters_atomically");
+    _SYSTEM_SERVICE_SUFFIXES.some(s => name.endsWith(s));
 }
 
 function renderMainPlaceholder() {
@@ -337,51 +339,45 @@ function renderList(containerId, items, kind) {
     return;
   }
 
-  filtered.forEach(name => {
+  for (const name of filtered) {
     const isActive = state.selected?.kind === kind && state.selected?.name === name;
+    const btn = document.createElement("button");
+    btn.className = "sidebar-item" + (isActive ? " active" : "");
+    btn.textContent = name;
+    btn.title = name;
+    btn.addEventListener("click", () => selectEntity(kind, name));
 
     if (kind === "topic") {
       const row = document.createElement("div");
       row.className = "sidebar-item-row";
-
-      const btn = document.createElement("button");
-      btn.className = "sidebar-item" + (isActive ? " active" : "");
-      btn.textContent = name;
-      btn.title = name;
-      btn.addEventListener("click", () => selectEntity(kind, name));
 
       const pinBtn = document.createElement("button");
       const isPinned = !!state.pinnedTopics[name];
       pinBtn.className = "pin-btn" + (isPinned ? " pinned" : "");
       pinBtn.title = isPinned ? "Unpin" : "Pin to watch strip";
       pinBtn.setAttribute("aria-pressed", String(isPinned));
-      pinBtn.textContent = "⊕";
+      pinBtn.textContent = "\u2295"; // ⊕
       pinBtn.addEventListener("click", (e) => { e.stopPropagation(); togglePin(name); });
 
       row.appendChild(btn);
       row.appendChild(pinBtn);
       container.appendChild(row);
     } else {
-      const btn = document.createElement("button");
-      btn.className = "sidebar-item" + (isActive ? " active" : "");
-      btn.textContent = name;
-      btn.title = name;
-      btn.addEventListener("click", () => selectEntity(kind, name));
       container.appendChild(btn);
     }
-  });
+  }
 }
 
 // ── Entity selection ──────────────────────────────────────────────────────────
+
+const PANEL_RENDERERS = { topic: renderTopicPanel, node: renderNodePanel, service: renderServicePanel };
 
 function selectEntity(kind, name) {
   stopWatching();
   stopContinuousPublish();
   state.selected = { kind, name };
   renderSidebar();
-  if (kind === "topic") renderTopicPanel(name);
-  else if (kind === "node") renderNodePanel(name);
-  else if (kind === "service") renderServicePanel(name);
+  PANEL_RENDERERS[kind]?.(name);
 }
 
 // ── Topic panel ────────────────────────────────────────────────────────────────
@@ -447,7 +443,6 @@ function renderTopicPanel(topic) {
     doPublish(topic, msgType)
   );
 
-  // Cmd/Ctrl+Enter to publish
   document.getElementById("publish-msg").addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
       e.preventDefault();
@@ -455,7 +450,6 @@ function renderTopicPanel(topic) {
     }
   });
 
-  // History select
   document.getElementById("publish-history").addEventListener("change", (e) => {
     if (e.target.value) {
       document.getElementById("publish-msg").value = e.target.value;
@@ -464,7 +458,6 @@ function renderTopicPanel(topic) {
   });
   renderPublishHistory(topic);
 
-  // Continuous publish
   document.getElementById("repeat-checkbox").addEventListener("change", (e) => {
     if (e.target.checked) {
       const hz = parseFloat(document.getElementById("repeat-hz").value) || 1;
@@ -654,10 +647,10 @@ function unpinTopic(topic) {
 }
 
 function unpinAllTopics() {
-  Object.keys(state.pinnedTopics).forEach(topic => {
-    state.pinnedTopics[topic].sub.unsubscribe();
-    delete state.pinnedTopics[topic];
-  });
+  for (const entry of Object.values(state.pinnedTopics)) {
+    entry.sub.unsubscribe();
+  }
+  state.pinnedTopics = {};
   renderPinnedRow();
 }
 
@@ -709,14 +702,10 @@ function isPoseTopic(msgType) {
 // ── Pose visualizer ───────────────────────────────────────────────────────────
 
 function extractPosition(msg) {
-  if (msg.pose?.pose?.position) {
-    return { x: msg.pose.pose.position.x, y: msg.pose.pose.position.y, theta: yawFromQuaternion(msg.pose.pose.orientation) };
-  }
-  if (msg.pose?.position) {
-    return { x: msg.pose.position.x, y: msg.pose.position.y, theta: yawFromQuaternion(msg.pose.orientation) };
-  }
-  if (msg.position) {
-    return { x: msg.position.x, y: msg.position.y, theta: yawFromQuaternion(msg.orientation) };
+  // Walk into nested pose structures: msg.pose.pose, msg.pose, or msg itself
+  const poseData = msg.pose?.pose ?? msg.pose ?? msg;
+  if (poseData.position) {
+    return { x: poseData.position.x, y: poseData.position.y, theta: yawFromQuaternion(poseData.orientation) };
   }
   if (typeof msg.x === "number" && typeof msg.y === "number") {
     return { x: msg.x, y: msg.y, theta: msg.theta ?? 0 };
@@ -769,7 +758,6 @@ function renderPoseCanvas(topic) {
     y: H - ((wy - wy0) / (wy1 - wy0)) * H,
   });
 
-  // Grid
   ctx.strokeStyle = cBorder;
   ctx.lineWidth = 0.5;
   for (let i = 0; i <= 5; i++) {
@@ -780,7 +768,6 @@ function renderPoseCanvas(topic) {
     ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
   }
 
-  // Trail
   if (entry.trail.length > 1) {
     for (let i = 1; i < entry.trail.length; i++) {
       ctx.globalAlpha = 0.3 + 0.7 * (i / entry.trail.length);
@@ -793,7 +780,6 @@ function renderPoseCanvas(topic) {
     ctx.globalAlpha = 1;
   }
 
-  // Current position
   if (pos) {
     const cp = toC(pos.x, pos.y);
     const theta = pos.theta ?? 0;
@@ -1024,18 +1010,14 @@ class MCPClient {
   async connect(url) {
     this.url = url.replace(/\/$/, "");
     this.reqId = 0; this.connected = false; this.tools = [];
-    // 1. initialize
     const initResult = await this._request("initialize", {
       protocolVersion: "2024-11-05",
       capabilities: {},
       clientInfo: { name: "ros-webmcp-dashboard", version: "1.0" },
     });
     this.serverInfo = initResult.serverInfo;
-    // 2. notifications/initialized (required)
     await this._notify("notifications/initialized");
-    // 3. tools/list
     const { tools } = await this._request("tools/list");
-    // normalize MCP shape → dashboard shape: inputSchema → parameters
     this.tools = (tools || []).map(t => ({
       name: t.name, description: t.description,
       parameters: t.inputSchema || { type: "object", properties: {} },
@@ -1046,7 +1028,6 @@ class MCPClient {
 
   async callTool(name, args) {
     const r = await this._request("tools/call", { name, arguments: args });
-    // MCP result: { content: [{type:"text", text:"..."}] }
     if (r?.content?.[0]?.type === "text") {
       try { return JSON.parse(r.content[0].text); } catch { return r.content[0].text; }
     }
@@ -1093,14 +1074,15 @@ class MCPClient {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        for (const line of buf.split("\n")) {
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
           if (!line.startsWith("data: ")) continue;
           try {
             const p = JSON.parse(line.slice(6));
             if (p.id !== undefined || p.error) last = p;
           } catch {}
         }
-        buf = buf.split("\n").pop() ?? "";
       }
     } finally { reader.cancel(); }
     return last ?? {};
@@ -1118,9 +1100,9 @@ function getActiveTools() {
 // ── WebMCP tool registration ───────────────────────────────────────────────────
 
 const SIMULATORS = [
-  { name: "Turtlesim (ts1)", vncPort: 8080, detect: (nodes) => nodes.some(n => n === "/ts1/turtlesim" || n.endsWith("/ts1/turtlesim")) },
-  { name: "Turtlesim (ts2)", vncPort: 8081, detect: (nodes) => nodes.some(n => n === "/ts2/turtlesim" || n.endsWith("/ts2/turtlesim")) },
-  { name: "Turtlesim (ts3)", vncPort: 8082, detect: (nodes) => nodes.some(n => n === "/ts3/turtlesim" || n.endsWith("/ts3/turtlesim")) },
+  { name: "Turtlesim (ts1)", vncPort: 8080, detect: (nodes) => nodes.some(n => n.endsWith("/ts1/turtlesim")) },
+  { name: "Turtlesim (ts2)", vncPort: 8081, detect: (nodes) => nodes.some(n => n.endsWith("/ts2/turtlesim")) },
+  { name: "Turtlesim (ts3)", vncPort: 8082, detect: (nodes) => nodes.some(n => n.endsWith("/ts3/turtlesim")) },
 ];
 
 const TOOLS = [
@@ -1398,10 +1380,7 @@ function registerWebMCPTools() {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.parameters,
-        execute: async (params) => {
-          const result = await chatExecuteToolCall(tool.name, params);
-          return result;
-        },
+        execute: (params) => chatExecuteToolCall(tool.name, params),
       });
       registered++;
     } catch (err) {
@@ -1442,7 +1421,6 @@ function appendToolLog(entry) {
     body.hidden = false;
     toggleBtn?.setAttribute("aria-expanded", "true");
     if (toggleBtn) toggleBtn.textContent = "▲";
-    // ensure tool log tab is active when auto-opening
     setLogTab("tools");
   }
 
@@ -1513,12 +1491,11 @@ function createTraceEntryEl(entry) {
   const layerLabel = { "mcp-http": "MCP", "rosbridge": "ROS WS", "ai-api": "AI" }[entry.layer] || entry.layer;
   const dirSymbol = entry.dir === "out" ? "→" : "←";
   const timeStr = new Date(entry.ts).toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  const layerClass = entry.layer.replace(/-/g, "-");
 
   el.innerHTML = `
     <div class="trace-entry-header">
       <span class="trace-dir-${entry.dir}">${dirSymbol}</span>
-      <span class="trace-layer trace-layer-${layerClass}">${escHtml(layerLabel)}</span>
+      <span class="trace-layer trace-layer-${entry.layer}">${escHtml(layerLabel)}</span>
       <span class="trace-method">${escHtml(entry.method)}</span>
       ${entry.durationMs !== undefined ? `<span class="trace-duration">${entry.durationMs}ms</span>` : ""}
       <span class="trace-duration">${timeStr}</span>
@@ -1566,21 +1543,19 @@ function setLogTab(tab) {
 // ── MCP connect / disconnect ──────────────────────────────────────────────────
 
 function updateMCPStatusDot(status) {
-  // status: "disconnected" | "connecting" | "connected" | "error"
   const dot = document.getElementById("mcp-status-dot");
   const text = document.getElementById("mcp-status-text");
-  const row = document.getElementById("mcp-status-row");
   if (!dot || !text) return;
-  dot.className = "status-dot" + (status === "connected" ? " connected" : status === "error" ? " error" : status === "connecting" ? " connecting" : "");
-  if (status === "connected" && mcpClient.serverInfo) {
-    text.textContent = `MCP · ${mcpClient.tools.length} tools`;
-  } else if (status === "connecting") {
-    text.textContent = "MCP · connecting…";
-  } else if (status === "error") {
-    text.textContent = "MCP · error";
-  } else {
-    text.textContent = "MCP";
-  }
+
+  const modifiers = { connected: " connected", error: " error", connecting: " connecting" };
+  dot.className = "status-dot" + (modifiers[status] || "");
+
+  const labels = {
+    connected: mcpClient.serverInfo ? `MCP · ${mcpClient.tools.length} tools` : "MCP",
+    connecting: "MCP · connecting…",
+    error: "MCP · error",
+  };
+  text.textContent = labels[status] || "MCP";
 }
 
 async function connectMCP(url) {
@@ -1640,9 +1615,6 @@ function chipList(items) {
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
 const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
-const GITHUB_CLIENT_ID = "Ov23lioKDt8Os7hdiSEh";
-const CORS_PROXY_URL = "https://cors-proxy.jonasneves.workers.dev";
-const OAUTH_CALLBACK_ORIGIN = "https://neevs.io";
 
 const chatState = {
   provider: "anthropic",
@@ -1780,67 +1752,6 @@ function applyModelSelection(value) {
   if (isGitHub) updateGitHubAuthBar();
 }
 
-async function connectGitHub() {
-  const oauthState = crypto.randomUUID();
-  const redirectUri = OAUTH_CALLBACK_ORIGIN + "/";
-
-  const authUrl = new URL("https://github.com/login/oauth/authorize");
-  authUrl.searchParams.set("client_id", GITHUB_CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("state", oauthState);
-  authUrl.searchParams.set("scope", "read:user");
-
-  const width = 500, height = 600;
-  const left = window.screenX + (window.innerWidth - width) / 2;
-  const top = window.screenY + (window.innerHeight - height) / 2;
-
-  return new Promise((resolve, reject) => {
-    const popup = window.open(
-      authUrl.toString(), "github-oauth",
-      `width=${width},height=${height},left=${left},top=${top},popup=yes`
-    );
-    if (!popup) { reject(new Error("Popup blocked — allow popups for this site")); return; }
-
-    const handleMessage = async (event) => {
-      if (event.origin !== OAUTH_CALLBACK_ORIGIN) return;
-      const { type, code, error } = event.data || {};
-      if (type !== "oauth-callback") return;
-      window.removeEventListener("message", handleMessage);
-      clearInterval(pollTimer);
-      if (error) { reject(new Error(error)); return; }
-      if (!code) { reject(new Error("No code received")); return; }
-      try {
-        const res = await fetch(`${CORS_PROXY_URL}/token`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, code, redirect_uri: redirectUri }),
-        });
-        const data = await res.json();
-        if (data.error || !data.access_token) throw new Error(data.error_description || data.error || "Token exchange failed");
-        let username = data.username;
-        if (!username) {
-          const userRes = await fetch("https://api.github.com/user", {
-            headers: { Authorization: `Bearer ${data.access_token}`, Accept: "application/vnd.github+json" },
-          });
-          if (userRes.ok) username = (await userRes.json()).login;
-        }
-        resolve({ token: data.access_token, username: username || "" });
-      } catch (err) {
-        reject(err);
-      }
-    };
-
-    window.addEventListener("message", handleMessage);
-    const pollTimer = setInterval(() => {
-      if (popup.closed) {
-        clearInterval(pollTimer);
-        window.removeEventListener("message", handleMessage);
-        reject(new Error("OAuth flow cancelled"));
-      }
-    }, 500);
-  });
-}
-
 function updateGitHubAuthBar() {
   const bar = document.getElementById("chat-github-bar");
   if (!bar) return;
@@ -1869,7 +1780,7 @@ function updateGitHubAuthBar() {
       connectBtn.textContent = "Connecting…";
       connectBtn.disabled = true;
       try {
-        chatState.githubAuth = await connectGitHub();
+        chatState.githubAuth = await connectGitHub('read:user', 'ros-mcp');
         localStorage.setItem("webmcp-gh-auth", JSON.stringify(chatState.githubAuth));
         updateGitHubAuthBar();
       } catch (err) {
@@ -1940,9 +1851,8 @@ async function sendChatMsg() {
   const text = input.value.trim();
   if (!text || chatState.busy) return;
 
-  const key = chatState.provider === "github" ? chatState.githubAuth?.token
-            : chatState.provider === "local"  ? null
-            : chatState.claudeKey;
+  const keyByProvider = { github: chatState.githubAuth?.token, local: null, anthropic: chatState.claudeKey };
+  const key = keyByProvider[chatState.provider] ?? chatState.claudeKey;
   if (chatState.provider !== "local" && !key) {
     toast(chatState.provider === "github" ? "Connect GitHub above" : "Enter your Anthropic API key first", "error");
     return;
@@ -2424,14 +2334,17 @@ document.getElementById("log-toggle").addEventListener("click", () => {
   }
 });
 
-document.getElementById("log-tab-tools").addEventListener("click", () => {
+function ensureLogBodyExpanded() {
   const body = document.getElementById("log-body");
-  if (body.hidden) {
-    body.hidden = false;
-    const toggle = document.getElementById("log-toggle");
-    toggle.setAttribute("aria-expanded", "true");
-    toggle.textContent = "▲";
-  }
+  if (!body.hidden) return;
+  body.hidden = false;
+  const toggle = document.getElementById("log-toggle");
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.textContent = "▲";
+}
+
+document.getElementById("log-tab-tools").addEventListener("click", () => {
+  ensureLogBodyExpanded();
   setLogTab("tools");
   const list = document.getElementById("tool-log-list");
   list.innerHTML = "";
@@ -2439,13 +2352,7 @@ document.getElementById("log-tab-tools").addEventListener("click", () => {
 });
 
 document.getElementById("log-tab-trace").addEventListener("click", () => {
-  const body = document.getElementById("log-body");
-  if (body.hidden) {
-    body.hidden = false;
-    const toggle = document.getElementById("log-toggle");
-    toggle.setAttribute("aria-expanded", "true");
-    toggle.textContent = "▲";
-  }
+  ensureLogBodyExpanded();
   setLogTab("trace");
 });
 
@@ -2461,7 +2368,6 @@ document.getElementById("mcp-connect-btn").addEventListener("click", () => {
   }
 });
 
-// Wire up MCP trace events
 mcpClient.on("trace", appendTrace);
 
 registerWebMCPTools();
@@ -2541,7 +2447,6 @@ function updateChatModelLabel() {
   if (!sel || !label) return;
   const opt = sel.options[sel.selectedIndex];
   const text = opt?.text || "";
-  // Shorten: "Claude Sonnet 4.6" → "Claude Sonnet 4.6", "GitHub · GPT-4.1" → "GPT-4.1"
   label.textContent = text.replace(/^GitHub\s*·\s*/, "");
 }
 

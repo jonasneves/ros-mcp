@@ -1,13 +1,11 @@
 from fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
-from ros_mcp.utils.websocket import WebSocketManager
+from ros_mcp.utils.websocket import WebSocketManager, extract_service_failure_error
 
 
-def _get_response_data(response: dict | None) -> dict | None:
+def _get_response_data(response: dict) -> dict | None:
     """Extract result data from 'values' or 'result' key of a rosbridge response."""
-    if not response:
-        return None
     if "values" in response:
         return response["values"]
     return response.get("result")
@@ -15,21 +13,16 @@ def _get_response_data(response: dict | None) -> dict | None:
 
 def _is_empty_value(value: str) -> bool:
     """Check if a parameter value is effectively empty (handles '""' for non-existent params)."""
-    if not value:
-        return True
-    stripped = value.strip('"').strip("'")
-    return not stripped
+    return not value or not value.strip('"').strip("'")
 
 
 def _safe_check_parameter_exists(
     name: str, ws_manager: WebSocketManager
 ) -> tuple[bool, str, dict | None]:
-    """
-    Safely check if a parameter exists using get_param (which doesn't crash rosapi_node).
-    Also returns the full response if the parameter exists, to avoid redundant calls.
+    """Check if a parameter exists via get_param (safe, unlike has_param which crashes rosapi_node).
 
-    Returns:
-        tuple: (exists: bool, reason: str, response: dict | None)
+    Returns (exists, reason, response).  The response is passed through when the
+    parameter exists so the caller can avoid a redundant request.
     """
     message = {
         "op": "call_service",
@@ -39,26 +32,37 @@ def _safe_check_parameter_exists(
         "id": f"check_param_exists_{name.replace('/', '_').replace(':', '_')}",
     }
 
+    with ws_manager:
+        response = ws_manager.request(message)
+
+    if "error" in response:
+        return False, response["error"], None
+
+    result_data = _get_response_data(response)
+    if isinstance(result_data, dict):
+        value = result_data.get("value", "")
+        if _is_empty_value(value):
+            reason = result_data.get("reason", "Parameter does not exist")
+            return False, reason, None
+        return True, "", response
+    if result_data:
+        return True, "", response
+
+    return False, "Unexpected response format", None
+
+
+def _infer_param_type(param_value: str) -> str:
+    """Infer a parameter type from its string value."""
+    clean = param_value.strip('"')
+    if clean.lower() in ("true", "false"):
+        return "bool"
+    if clean.lstrip("-").isdigit():
+        return "int"
     try:
-        with ws_manager:
-            response = ws_manager.request(message)
-
-        if not response:
-            return False, "No response from service", None
-
-        result_data = _get_response_data(response)
-        if isinstance(result_data, dict):
-            value = result_data.get("value", "")
-            if _is_empty_value(value):
-                reason = result_data.get("reason", "Parameter does not exist")
-                return False, reason, None
-            return True, "", response
-        if result_data:
-            return True, "", response
-
-        return False, "Unexpected response format", None
-    except Exception as e:
-        return False, f"Error checking parameter: {str(e)}", None
+        float(clean)
+        return "float" if "." in clean else "int"
+    except ValueError:
+        return "string"
 
 
 def register_parameter_tools(
@@ -79,7 +83,6 @@ def register_parameter_tools(
         if not name or not name.strip():
             return {"error": "Parameter name cannot be empty"}
 
-        # get_param is safe (unlike has_param which crashes rosapi_node).
         exists, reason, response = _safe_check_parameter_exists(name, ws_manager)
         if not exists:
             return {
@@ -88,14 +91,6 @@ def register_parameter_tools(
                 "successful": False,
                 "reason": reason or f"Parameter {name} does not exist",
                 "exists": False,
-            }
-
-        if isinstance(response, str):
-            return {
-                "name": name,
-                "value": "",
-                "successful": False,
-                "reason": f"Unexpected response format: {response}",
             }
 
         result_data = _get_response_data(response)
@@ -139,23 +134,15 @@ def register_parameter_tools(
             "id": f"set_param_{name.replace('/', '_').replace(':', '_')}",
         }
 
-        try:
-            with ws_manager:
-                response = ws_manager.request(message)
-        except Exception as e:
-            return {
-                "name": name,
-                "value": value,
-                "successful": False,
-                "reason": f"Error setting parameter: {str(e)}",
-            }
+        with ws_manager:
+            response = ws_manager.request(message)
 
-        if isinstance(response, str):
+        if "error" in response:
             return {
                 "name": name,
                 "value": value,
                 "successful": False,
-                "reason": f"Unexpected response format: {response}",
+                "reason": response["error"],
             }
 
         result_data = _get_response_data(response)
@@ -190,7 +177,6 @@ def register_parameter_tools(
         if not name or not name.strip():
             return {"error": "Parameter name cannot be empty"}
 
-        # /rosapi/has_param crashes rosapi_node for non-existent params; use get_param instead
         exists, reason, _ = _safe_check_parameter_exists(name, ws_manager)
 
         return {
@@ -231,21 +217,14 @@ def register_parameter_tools(
             "id": f"delete_param_{name.replace('/', '_').replace(':', '_')}",
         }
 
-        try:
-            with ws_manager:
-                response = ws_manager.request(message)
-        except Exception as e:
-            return {
-                "name": name,
-                "successful": False,
-                "reason": f"Error deleting parameter: {str(e)}",
-            }
+        with ws_manager:
+            response = ws_manager.request(message)
 
-        if isinstance(response, str):
+        if "error" in response:
             return {
                 "name": name,
                 "successful": False,
-                "reason": f"Unexpected response format: {response}",
+                "reason": response["error"],
             }
 
         result_data = _get_response_data(response)
@@ -274,11 +253,9 @@ def register_parameter_tools(
         if not node_name or not node_name.strip():
             return {"error": "Node name cannot be empty"}
 
-        normalized_node = node_name.strip()
+        normalized_node = node_name.strip().rstrip("/")
         if not normalized_node.startswith("/"):
             normalized_node = f"/{normalized_node}"
-        if normalized_node.endswith("/") and len(normalized_node) > 1:
-            normalized_node = normalized_node[:-1]
 
         service_name = f"{normalized_node}/list_parameters"
 
@@ -290,29 +267,11 @@ def register_parameter_tools(
             "id": f"get_parameters_{normalized_node.replace('/', '_')}",
         }
 
-        try:
-            with ws_manager:
-                response = ws_manager.request(message)
-        except Exception as e:
-            return {"error": f"Failed to get parameters for node {normalized_node}: {str(e)}"}
+        with ws_manager:
+            response = ws_manager.request(message)
 
-        if isinstance(response, str):
-            return {
-                "error": f"Failed to get parameters for node {normalized_node}: Unexpected response format: {response}"
-            }
-
-        if not response:
-            return {
-                "error": f"Failed to get parameters for node {normalized_node}: No response or timeout from rosbridge"
-            }
-
-        if isinstance(response, dict) and "error" in response:
-            error_msg = response.get("error", "Service call failed")
-            return {"error": f"Failed to get parameters for node {normalized_node}: {error_msg}"}
-
-        if response and "result" in response and not response["result"]:
-            error_msg = response.get("values", {}).get("message", "Service call failed")
-            return {"error": f"Failed to get parameters for node {normalized_node}: {error_msg}"}
+        if err := extract_service_failure_error(response):
+            return err
 
         names = []
         result_data = _get_response_data(response)
@@ -347,6 +306,10 @@ def register_parameter_tools(
         if not name or not name.strip():
             return {"error": "Parameter name cannot be empty"}
 
+        node_part, _, param_part = name.partition(":")
+        if not param_part:
+            node_part, param_part = "", name
+
         def _error_response(reason: str) -> dict:
             return {
                 "name": name,
@@ -354,8 +317,8 @@ def register_parameter_tools(
                 "type": "unknown",
                 "exists": False,
                 "description": "",
-                "node": name.split(":")[0] if ":" in name else "",
-                "parameter": name.split(":")[1] if ":" in name else name,
+                "node": node_part,
+                "parameter": param_part,
                 "reason": reason,
             }
 
@@ -372,17 +335,8 @@ def register_parameter_tools(
                 "id": f"get_param_details_{name.replace('/', '_').replace(':', '_')}",
             }
 
-            try:
-                with ws_manager:
-                    value_response = ws_manager.request(value_message)
-            except Exception as e:
-                return _error_response(f"Error getting parameter details: {str(e)}")
-
-        if isinstance(value_response, str):
-            return _error_response(f"Unexpected response format: {value_response}")
-
-        if not value_response:
-            return _error_response("No response from service")
+            with ws_manager:
+                value_response = ws_manager.request(value_message)
 
         param_value = ""
         param_successful = False
@@ -408,36 +362,22 @@ def register_parameter_tools(
             "id": f"describe_param_details_{name.replace('/', '_').replace(':', '_')}",
         }
 
-        try:
-            with ws_manager:
-                type_response = ws_manager.request(type_message)
-        except Exception:
-            type_response = None  # describe_parameters is optional; fall back to type inference
+        with ws_manager:
+            type_response = ws_manager.request(type_message)
 
         param_type = "unknown"
         param_description = ""
 
-        if isinstance(type_response, dict):
-            type_data = _get_response_data(type_response)
-            if isinstance(type_data, dict):
-                descriptors = type_data.get("descriptors", [])
-                if descriptors:
-                    descriptor = descriptors[0]
-                    param_type = descriptor.get("type", "unknown")
-                    param_description = descriptor.get("description", "")
+        type_data = _get_response_data(type_response)
+        if isinstance(type_data, dict):
+            descriptors = type_data.get("descriptors", [])
+            if descriptors:
+                descriptor = descriptors[0]
+                param_type = descriptor.get("type", "unknown")
+                param_description = descriptor.get("description", "")
 
         if param_type == "unknown" and param_value:
-            clean_value = param_value.strip('"')
-            if clean_value.lower() in ("true", "false"):
-                param_type = "bool"
-            elif clean_value.isdigit() or (
-                clean_value.startswith("-") and clean_value[1:].isdigit()
-            ):
-                param_type = "int"
-            elif "." in clean_value and clean_value.replace(".", "").replace("-", "").isdigit():
-                param_type = "float"
-            else:
-                param_type = "string"
+            param_type = _infer_param_type(param_value)
 
         return {
             "name": name,
@@ -445,6 +385,6 @@ def register_parameter_tools(
             "type": param_type,
             "exists": param_successful,
             "description": param_description,
-            "node": name.split(":")[0] if ":" in name else "",
-            "parameter": name.split(":")[1] if ":" in name else name,
+            "node": node_part,
+            "parameter": param_part,
         }

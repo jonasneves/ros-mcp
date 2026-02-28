@@ -3,21 +3,18 @@ import socket
 import subprocess
 
 
+_OVERALL_STATUS = {
+    (True, True): "accessible",
+    (True, False): "ip_reachable_port_closed",
+    (False, True): "ip_unreachable_port_open",
+    (False, False): "unreachable",
+}
+
+
 def ping_ip_and_port(
     ip: str, port: int, ping_timeout: float = 2.0, port_timeout: float = 2.0
 ) -> dict:
-    """
-    Ping an IP address and check if a specific port is open.
-
-    Args:
-        ip (str): The IP address to ping (e.g., '192.168.1.100')
-        port (int): The port number to check (e.g., 9090)
-        ping_timeout (float): Timeout for ping in seconds. Default = 2.0.
-        port_timeout (float): Timeout for port check in seconds. Default = 2.0.
-
-    Returns:
-        dict: Contains ping and port check results with detailed status information.
-    """
+    """Ping an IP address and check whether a specific port is open."""
     result = {
         "ip": ip,
         "port": port,
@@ -26,45 +23,57 @@ def ping_ip_and_port(
         "overall_status": "unknown",
     }
 
+    _check_ping(result, ip, ping_timeout)
+    _check_port(result, ip, port, port_timeout)
+
+    result["overall_status"] = _OVERALL_STATUS[
+        result["ping"]["success"], result["port_check"]["open"]
+    ]
+    return result
+
+
+def _extract_ping_time(stdout: str) -> float | None:
+    """Extract response time in ms from ping output (format: 'time=X.XX ms')."""
+    for line in stdout.split("\n"):
+        if "time=" not in line:
+            continue
+        try:
+            return float(line.split("time=")[1].split()[0])
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _check_ping(result: dict, ip: str, timeout: float) -> None:
+    """Run a single ICMP ping and populate result['ping']."""
     try:
-        # Use platform-specific ping command
         if platform.system().lower() == "windows":
-            ping_cmd = ["ping", "-n", "1", "-w", str(int(ping_timeout * 1000)), ip]
-        else:  # Linux, macOS, etc.
-            ping_cmd = ["ping", "-c", "1", "-W", str(int(ping_timeout)), ip]
-
-        ping_result = subprocess.run(
-            ping_cmd, capture_output=True, text=True, timeout=ping_timeout + 1.0
-        )
-
-        if ping_result.returncode == 0:
-            # Extract response time from ping output (format: "time=X.XX ms")
-            for line in ping_result.stdout.split("\n"):
-                if "time=" in line:
-                    time_part = line.split("time=")[1].split()[0]
-                    try:
-                        result["ping"]["response_time_ms"] = float(time_part)
-                    except ValueError:
-                        pass
-                    break
-
-            result["ping"]["success"] = True
+            cmd = ["ping", "-n", "1", "-w", str(int(timeout * 1000)), ip]
         else:
-            result["ping"]["error"] = f"Ping failed with return code {ping_result.returncode}"
+            cmd = ["ping", "-c", "1", "-W", str(int(timeout)), ip]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 1.0)
+
+        if proc.returncode == 0:
+            result["ping"]["success"] = True
+            result["ping"]["response_time_ms"] = _extract_ping_time(proc.stdout)
+        else:
+            result["ping"]["error"] = f"Ping failed with return code {proc.returncode}"
 
     except subprocess.TimeoutExpired:
-        result["ping"]["error"] = f"Ping timeout after {ping_timeout} seconds"
+        result["ping"]["error"] = f"Ping timeout after {timeout} seconds"
     except FileNotFoundError:
         result["ping"]["error"] = "Ping command not found on this system"
     except Exception as e:
-        result["ping"]["error"] = f"Ping error: {str(e)}"
+        result["ping"]["error"] = f"Ping error: {e}"
 
+
+def _check_port(result: dict, ip: str, port: int, timeout: float) -> None:
+    """Attempt a TCP connection and populate result['port_check']."""
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(port_timeout)
-
-        port_result = sock.connect_ex((ip, port))
-        sock.close()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            port_result = sock.connect_ex((ip, port))
 
         if port_result == 0:
             result["port_check"]["open"] = True
@@ -75,23 +84,9 @@ def ping_ip_and_port(
 
     except socket.timeout:
         result["port_check"]["error"] = (
-            f"Port {port} connection timeout after {port_timeout} seconds"
+            f"Port {port} connection timeout after {timeout} seconds"
         )
     except socket.gaierror as e:
-        result["port_check"]["error"] = f"DNS resolution error: {str(e)}"
+        result["port_check"]["error"] = f"DNS resolution error: {e}"
     except Exception as e:
-        result["port_check"]["error"] = f"Port check error: {str(e)}"
-
-    ping_success = result["ping"]["success"]
-    port_open = result["port_check"]["open"]
-
-    if ping_success and port_open:
-        result["overall_status"] = "accessible"
-    elif ping_success and not port_open:
-        result["overall_status"] = "ip_reachable_port_closed"
-    elif not ping_success and port_open:
-        result["overall_status"] = "ip_unreachable_port_open"
-    else:
-        result["overall_status"] = "unreachable"
-
-    return result
+        result["port_check"]["error"] = f"Port check error: {e}"
