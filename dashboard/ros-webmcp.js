@@ -1356,6 +1356,42 @@ const TOOLS = [
       return { success: true, robots_moved: prepared.length, duration_s: duration, topics: prepared.map(r => r.topic) };
     },
   },
+  {
+    name: "get_robot_description",
+    description: "Fetch the robot's URDF from the /robot_description ROS parameter. Requires robot_state_publisher to be running.",
+    parameters: { type: "object", properties: {} },
+    handler: async () => {
+      const res = await callRosapi("/rosapi/get_param", "rosapi_msgs/srv/GetParam", { name: "/robot_description" });
+      const urdf = (res.value || "").trim().replace(/^"|"$/g, "");
+      if (!urdf) return { error: "Robot description not found. Is robot_state_publisher running?" };
+      return { urdf, length: urdf.length };
+    },
+  },
+  {
+    name: "get_joint_states",
+    description: "Read current joint positions (rad), velocities (rad/s), and efforts (N·m) from /joint_states.",
+    parameters: {
+      type: "object",
+      properties: {
+        topic:   { type: "string", description: "Joint states topic (default: /joint_states)", default: "/joint_states" },
+        timeout: { type: "number", description: "Timeout in seconds (default 5)", default: 5 },
+      },
+    },
+    handler: async ({ topic = "/joint_states", timeout = 5 }) => {
+      const msg = await subscribeOnce(topic, "sensor_msgs/JointState", timeout * 1000);
+      const names     = msg.name     || [];
+      const positions = msg.position || [];
+      const velocities = msg.velocity || [];
+      const efforts   = msg.effort   || [];
+      const joints = names.map((name, i) => {
+        const j = { name, position_rad: positions[i] ?? null };
+        if (velocities.length) j.velocity_rad_s = velocities[i] ?? null;
+        if (efforts.length)    j.effort_nm      = efforts[i]    ?? null;
+        return j;
+      });
+      return { topic, joint_count: joints.length, joints };
+    },
+  },
 ];
 
 let _webmcpActive = false;

@@ -60,7 +60,7 @@ On macOS or a remote machine, point directly at a rosbridge already running alon
 
 ## Tools
 
-30+ tools covering topics, services, nodes, actions, parameters, images, and motion control. See [docs/tools.md](docs/tools.md) for the full reference.
+30+ tools covering topics, services, nodes, actions, parameters, robot description, joint states, images, and motion control. See [docs/tools.md](docs/tools.md) for the full reference.
 
 ## Configuration
 

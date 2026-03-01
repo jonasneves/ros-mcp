@@ -61,6 +61,8 @@
 | `detect_ros_version` | Detect ROS version and distro |
 | `get_verified_robots_list` | List robots with pre-built specs |
 | `get_verified_robot_spec` | Load spec and prompts for a verified robot |
+| `get_robot_description` | Fetch the robot URDF from `/robot_description` |
+| `get_joint_states` | Read joint positions (rad), velocities, and efforts |
 
 ### Images
 | Tool | Description |
