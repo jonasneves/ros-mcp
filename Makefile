@@ -91,10 +91,10 @@ configure-remote:
 	claude mcp add --transport http ros-mcp $${URL}/mcp
 
 deploy-webmcp:
+	cd dashboard && node build.mjs
+	git add dashboard/
+	git diff --staged --quiet || git commit -m "chore: build dashboard"
 	git push
-	gh api repos/ros-mcp/ros-mcp.github.io/actions/workflows/236270456/dispatches -X POST --field ref=deploy
-	@gh run list --repo ros-mcp/ros-mcp.github.io --workflow deploy.yml --json databaseId --jq '.[1:][].databaseId' | \
-	while read id; do gh run delete $$id --repo ros-mcp/ros-mcp.github.io 2>/dev/null || true; done
 
 status-webmcp:
-	gh run list --repo ros-mcp/ros-mcp.github.io --limit 3
+	gh run list --repo jonasneves/ros-mcp --workflow deploy.yml --limit 3
