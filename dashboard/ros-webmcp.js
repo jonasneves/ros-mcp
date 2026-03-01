@@ -21,6 +21,12 @@ const state = {
   sidebarCollapsed: { topics: false, nodes: false, services: false },
   hideSystemServices: false,
   hideSystemNodes: false,
+  robotPanel: {
+    urdf: null,         // cached raw XML
+    parsed: null,       // { name, links[], joints[] }
+    jointSub: null,     // active ROSLIB.Topic
+    jointStates: {},    // { jointName: { position, velocity, effort } }
+  },
 };
 
 let _toolLogId = 0;
@@ -121,6 +127,7 @@ function disconnect() {
     state.ros = null;
   }
   stopWatching();
+  stopJointSubscription();
   state.connected = false;
   updateStatusDot(false, false);
   updateConnectBtn(false);
@@ -313,6 +320,8 @@ function renderSidebar() {
     if (btn) btn.setAttribute("aria-expanded", String(!state.sidebarCollapsed[section]));
     if (chevron) chevron.classList.toggle("collapsed", state.sidebarCollapsed[section]);
   }
+  const urdfBtn = document.getElementById("urdf-viewer-btn");
+  if (urdfBtn) urdfBtn.classList.toggle("active", state.selected?.kind === "robot");
 }
 
 function renderList(containerId, items, kind) {
@@ -370,11 +379,12 @@ function renderList(containerId, items, kind) {
 
 // ── Entity selection ──────────────────────────────────────────────────────────
 
-const PANEL_RENDERERS = { topic: renderTopicPanel, node: renderNodePanel, service: renderServicePanel };
+const PANEL_RENDERERS = { topic: renderTopicPanel, node: renderNodePanel, service: renderServicePanel, robot: renderRobotPanel };
 
 function selectEntity(kind, name) {
   stopWatching();
   stopContinuousPublish();
+  stopJointSubscription();
   state.selected = { kind, name };
   renderSidebar();
   PANEL_RENDERERS[kind]?.(name);
@@ -918,6 +928,206 @@ async function renderServicePanel(service) {
       btn.disabled = false; btn.textContent = "Call";
     }
   });
+}
+
+// ── URDF / Robot panel ────────────────────────────────────────────────────────
+
+function parseUrdf(xml) {
+  const doc = new DOMParser().parseFromString(xml, "application/xml");
+  const robot = doc.querySelector("robot");
+  if (!robot) return null;
+  const links = [...doc.querySelectorAll("link")].map(l => l.getAttribute("name"));
+  const joints = [...doc.querySelectorAll("joint")].map(j => {
+    const limit = j.querySelector("limit");
+    return {
+      name:   j.getAttribute("name"),
+      type:   j.getAttribute("type") || "fixed",
+      parent: j.querySelector("parent")?.getAttribute("link") || "",
+      child:  j.querySelector("child")?.getAttribute("link") || "",
+      lower:  limit ? parseFloat(limit.getAttribute("lower") ?? "0") : null,
+      upper:  limit ? parseFloat(limit.getAttribute("upper") ?? "0") : null,
+    };
+  });
+  return { name: robot.getAttribute("name") || "robot", links, joints };
+}
+
+function startJointSubscription(topic = "/joint_states") {
+  stopJointSubscription();
+  if (!state.ros || !state.connected) return;
+  const sub = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: "sensor_msgs/JointState" });
+  sub.subscribe(msg => {
+    const names = msg.name || [];
+    const pos   = msg.position || [];
+    const vel   = msg.velocity || [];
+    const eff   = msg.effort   || [];
+    state.robotPanel.jointStates = {};
+    names.forEach((n, i) => {
+      state.robotPanel.jointStates[n] = { position: pos[i] ?? null, velocity: vel[i] ?? null, effort: eff[i] ?? null };
+    });
+    updateJointTable();
+  });
+  state.robotPanel.jointSub = sub;
+}
+
+function stopJointSubscription() {
+  state.robotPanel.jointSub?.unsubscribe();
+  state.robotPanel.jointSub = null;
+}
+
+function updateJointTable() {
+  const states = state.robotPanel.jointStates;
+  Object.entries(states).forEach(([name, v]) => {
+    const row = document.getElementById(`jrow-${cssId(name)}`);
+    if (!row) return;
+    const deg = v.position != null ? (v.position * 180 / Math.PI).toFixed(2) : "—";
+    const vel = v.velocity != null ? v.velocity.toFixed(3) : "—";
+    const eff = v.effort   != null ? v.effort.toFixed(3)   : "—";
+    row.cells[1].textContent = deg;
+    row.cells[2].textContent = vel;
+    row.cells[3].textContent = eff;
+  });
+}
+
+async function renderRobotPanel() {
+  const main = document.getElementById("main-panel");
+  main.innerHTML = `
+    <div class="detail-header">
+      <div class="detail-title">URDF Viewer</div>
+      <div class="detail-type">Robot</div>
+    </div>
+    <div class="controls-row">
+      <button class="btn btn-primary btn-sm" id="btn-fetch-urdf">Fetch URDF</button>
+    </div>
+    <div id="urdf-content"></div>
+  `;
+
+  document.getElementById("btn-fetch-urdf").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-fetch-urdf");
+    btn.disabled = true;
+    btn.textContent = "Fetching…";
+    try {
+      const res = await callRosapi("/rosapi/get_param", "rosapi_msgs/srv/GetParam", { name: "/robot_description" });
+      const urdf = (res.value || "").trim().replace(/^"|"$/g, "");
+      if (!urdf) {
+        toast("Robot description not found. Is robot_state_publisher running?", "error");
+        return;
+      }
+      state.robotPanel.urdf = urdf;
+      state.robotPanel.parsed = parseUrdf(urdf);
+      renderUrdfContent();
+      toast("URDF loaded", "ok");
+    } catch (err) {
+      toast(`Failed to fetch URDF: ${err}`, "error");
+    } finally {
+      const b = document.getElementById("btn-fetch-urdf");
+      if (b) { b.disabled = false; b.textContent = "Fetch URDF"; }
+    }
+  });
+
+  if (state.robotPanel.parsed) renderUrdfContent();
+}
+
+function renderUrdfContent() {
+  const container = document.getElementById("urdf-content");
+  if (!container) return;
+  const parsed = state.robotPanel.parsed;
+  if (!parsed) return;
+
+  const nonFixed = parsed.joints.filter(j => j.type !== "fixed");
+  const fixed    = parsed.joints.filter(j => j.type === "fixed");
+
+  const byParent = {};
+  [...nonFixed, ...fixed].forEach(j => {
+    if (!byParent[j.parent]) byParent[j.parent] = [];
+    byParent[j.parent].push(j);
+  });
+
+  const jointTreeHtml = Object.entries(byParent).map(([parent, joints]) => `
+    <details open>
+      <summary class="joint-parent-label">${escHtml(parent)}</summary>
+      ${joints.map(j => {
+        const limitsHtml = j.lower != null && j.upper != null
+          ? `<span class="joint-limits">${(j.lower * 180 / Math.PI).toFixed(0)}° to ${(j.upper * 180 / Math.PI).toFixed(0)}°</span>`
+          : "";
+        return `<div class="joint-row">
+          <span class="joint-arrow">→</span>
+          <span class="joint-child">${escHtml(j.child)}</span>
+          <span class="joint-type-badge">${escHtml(j.type)}</span>
+          <span class="joint-name-muted">${escHtml(j.name)}</span>
+          ${limitsHtml}
+        </div>`;
+      }).join("")}
+    </details>
+  `).join("");
+
+  const jointRowsHtml = parsed.joints.map(j => `
+    <tr id="jrow-${cssId(j.name)}">
+      <td>${escHtml(j.name)}</td>
+      <td>—</td>
+      <td>—</td>
+      <td>—</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <div class="urdf-meta">
+      <div class="urdf-stat">
+        <span class="urdf-stat-value">${escHtml(parsed.name)}</span>
+        <span class="urdf-stat-label">Robot</span>
+      </div>
+      <div class="urdf-stat">
+        <span class="urdf-stat-value">${parsed.links.length}</span>
+        <span class="urdf-stat-label">Links</span>
+      </div>
+      <div class="urdf-stat">
+        <span class="urdf-stat-value">${parsed.joints.length}</span>
+        <span class="urdf-stat-label">Joints</span>
+      </div>
+    </div>
+    <div class="divider-label">Kinematic Tree</div>
+    <div class="joint-tree">${jointTreeHtml}</div>
+    <div class="divider-label">Joint States</div>
+    <div class="controls-row">
+      <button class="btn btn-sm" id="btn-subscribe-joints">Subscribe to /joint_states</button>
+      <button class="btn btn-sm" id="btn-stop-joints" style="display:none">Stop</button>
+      <span class="watch-indicator" id="joint-watch-indicator" style="display:none">
+        <span class="watch-dot"></span> Live
+      </span>
+    </div>
+    <table class="joint-table">
+      <thead>
+        <tr>
+          <th>Joint</th>
+          <th>Position (°)</th>
+          <th>Velocity (rad/s)</th>
+          <th>Effort (N·m)</th>
+        </tr>
+      </thead>
+      <tbody>${jointRowsHtml}</tbody>
+    </table>
+  `;
+
+  updateJointTable();
+
+  document.getElementById("btn-subscribe-joints").addEventListener("click", () => {
+    startJointSubscription("/joint_states");
+    document.getElementById("btn-subscribe-joints").style.display = "none";
+    document.getElementById("btn-stop-joints").style.display = "";
+    document.getElementById("joint-watch-indicator").style.display = "";
+  });
+
+  document.getElementById("btn-stop-joints").addEventListener("click", () => {
+    stopJointSubscription();
+    document.getElementById("btn-subscribe-joints").style.display = "";
+    document.getElementById("btn-stop-joints").style.display = "none";
+    document.getElementById("joint-watch-indicator").style.display = "none";
+  });
+
+  if (state.robotPanel.jointSub) {
+    document.getElementById("btn-subscribe-joints").style.display = "none";
+    document.getElementById("btn-stop-joints").style.display = "";
+    document.getElementById("joint-watch-indicator").style.display = "";
+  }
 }
 
 // ── Core ROS tool implementations ─────────────────────────────────────────────
@@ -2405,6 +2615,8 @@ document.getElementById("mcp-connect-btn").addEventListener("click", () => {
 });
 
 mcpClient.on("trace", appendTrace);
+
+document.getElementById("urdf-viewer-btn").addEventListener("click", () => selectEntity("robot", "urdf"));
 
 registerWebMCPTools();
 initChat();

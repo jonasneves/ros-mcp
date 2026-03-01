@@ -2051,3 +2051,46 @@ html[data-theme="dark"] {
   .url-input { width: 140px; }
   .chat-panel { width: 100%; border-left: none; border-top: 1px solid var(--border); }
 }
+
+/* ── URDF Viewer panel ── */
+
+.urdf-meta { display: flex; gap: 20px; padding: 10px 0; flex-wrap: wrap; }
+.urdf-stat { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 60px; }
+.urdf-stat-value { font-size: 20px; font-weight: 700; font-family: var(--font-mono); color: var(--accent); }
+.urdf-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+
+.joint-tree { display: flex; flex-direction: column; gap: 2px; }
+.joint-tree details { border-radius: var(--radius); overflow: hidden; }
+.joint-parent-label {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+  padding: 4px 8px; cursor: pointer; list-style: none; color: var(--text-secondary);
+}
+.joint-parent-label::-webkit-details-marker { display: none; }
+.joint-parent-label::before { content: "▶ "; font-size: 9px; }
+details[open] .joint-parent-label::before { content: "▼ "; }
+
+.joint-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px 3px 22px;
+  font-family: var(--font-mono); font-size: 12px;
+  border-radius: var(--radius);
+}
+.joint-row:hover { background: var(--surface); }
+.joint-arrow { color: var(--text-muted); flex-shrink: 0; }
+.joint-child { color: var(--text); }
+.joint-name-muted { color: var(--text-muted); font-size: 11px; }
+.joint-type-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 99px;
+  background: var(--surface-raised); color: var(--text-secondary); flex-shrink: 0;
+}
+.joint-limits { font-size: 10px; color: var(--text-muted); margin-left: auto; }
+
+.joint-table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; margin-top: 8px; }
+.joint-table th {
+  text-align: left; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-muted); padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.joint-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+.joint-table td:first-child { color: var(--text); }
