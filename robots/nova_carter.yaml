@@ -1,0 +1,22 @@
+name: nova_carter
+alias: nova_carter
+type: sim
+prompts: |
+  Nova Carter is NVIDIA's reference robot for Isaac Sim. It is a differential-drive
+  platform with a rich sensor suite. Use /cmd_vel for motion control.
+
+  Key topics:
+    /cmd_vel                                  geometry_msgs/Twist   — velocity commands (linear.x m/s, angular.z rad/s)
+    /odom                                     nav_msgs/Odometry     — wheel odometry
+    /scan                                     sensor_msgs/LaserScan — 2D lidar (front)
+    /front_3d_lidar/lidar_points              sensor_msgs/PointCloud2 — 3D lidar point cloud
+    /front_stereo_camera/left/image_raw       sensor_msgs/Image     — left stereo camera
+    /front_stereo_camera/right/image_raw      sensor_msgs/Image     — right stereo camera
+    /front_stereo_camera/left/camera_info     sensor_msgs/CameraInfo
+    /chassis_imu                              sensor_msgs/Imu       — IMU
+
+  Motion notes:
+  - Max linear speed: ~1.5 m/s
+  - Max angular speed: ~1.0 rad/s
+  - Always send a zero-velocity stop after motion commands
+  - Use turn_by_angle for rotation and move_by_distance for straight-line motion

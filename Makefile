@@ -1,8 +1,9 @@
 .DEFAULT_GOAL := help
 
 COMPOSE := docker compose -f docker/docker-compose.yml
+COMPOSE_ISAAC := docker compose -f docker/docker-compose.isaac-sim.yml
 
-.PHONY: help server server-http proxy turtlesim robots esp32 configure configure-desktop configure-remote deploy-webmcp status-webmcp
+.PHONY: help server server-http proxy turtlesim robots esp32 isaac-sim configure configure-desktop configure-remote deploy-webmcp status-webmcp
 
 help:
 	@echo ""
@@ -15,6 +16,7 @@ help:
 	@echo "  \033[36mturtlesim\033[0m          Launch 3 turtles + MCP server via Docker"
 	@echo "  \033[36mrobots\033[0m             Launch simulators + rosbridge only (connect via dashboard)"
 	@echo "  \033[36mesp32\033[0m              Launch rosbridge only — for physical ESP32 hardware"
+	@echo "  \033[36misaac-sim\033[0m          Launch rosbridge for Isaac Sim (FastDDS, host network)"
 	@echo ""
 	@echo "Configure"
 	@echo "  \033[36mconfigure\033[0m          Add this server to Claude Code (local stdio)"
@@ -59,6 +61,12 @@ esp32:
 	@echo "ESP32 target IP: $$(ipconfig getifaddr en0)"
 	@echo ""
 	$(COMPOSE) up --build rosbridge
+
+isaac-sim: .ghcr-login
+	@echo "Rosbridge: ws://localhost:9090"
+	@echo "MCP server: ROSBRIDGE_IP=127.0.0.1 make server-http"
+	@echo ""
+	$(COMPOSE_ISAAC) up --build rosbridge
 
 configure:
 	claude mcp add --transport stdio ros-mcp -- uv --directory $(shell pwd) run server.py

@@ -70,6 +70,24 @@ make turtlesim
 
 Simulators and rosbridge start automatically. MCP server at `http://localhost:9000/mcp`.
 
+### Docker + Isaac Sim
+
+**Prerequisites:** Isaac Sim installed, GPU and display available (Linux recommended). Enable the **ROS 2 Bridge** extension inside Isaac Sim before connecting.
+
+```bash
+# 1. In Isaac Sim: enable Extensions > ROS 2 Bridge, then play your scene
+# 2. Start rosbridge (FastDDS, host network):
+make isaac-sim
+# 3. In a second terminal, start the MCP server:
+ROSBRIDGE_IP=127.0.0.1 make server-http
+```
+
+On macOS or a remote machine, skip `make isaac-sim` and run rosbridge alongside Isaac Sim on that host, then point the MCP server at it:
+
+```bash
+ROSBRIDGE_IP=<host-ip> make server-http
+```
+
 ## Tools
 
 ### Connection

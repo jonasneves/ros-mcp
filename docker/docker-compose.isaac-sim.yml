@@ -1,0 +1,15 @@
+# Start Isaac Sim with its ROS 2 bridge enabled first, then: make isaac-sim
+# MCP server: run separately with ROSBRIDGE_IP=127.0.0.1 make server-http
+services:
+  rosbridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.rosbridge
+    container_name: rosbridge
+    network_mode: host
+    environment:
+      ROS_DISTRO: jazzy
+      # No RMW_IMPLEMENTATION — uses FastDDS to match Isaac Sim default
+    volumes:
+      - ./launch_rosbridge.launch.py:/ros2_ws/launch/launch_rosbridge.launch.py:ro
+    command: ["ros2", "launch", "/ros2_ws/launch/launch_rosbridge.launch.py"]

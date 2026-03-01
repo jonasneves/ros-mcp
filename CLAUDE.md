@@ -33,6 +33,27 @@ All containers must use the same DDS middleware. The rosbridge container require
 
 `cyclonedds.xml` is baked into images via `COPY`, so changes require `docker compose build` before `--force-recreate`.
 
+## Isaac Sim
+
+Isaac Sim uses FastDDS (ROS 2 default). The turtlesim setup forces CycloneDDS on rosbridge — do not reuse that compose file for Isaac Sim.
+
+`docker/docker-compose.isaac-sim.yml` starts rosbridge with:
+- `network_mode: host` — container shares host network, sees Isaac Sim DDS multicast
+- No `RMW_IMPLEMENTATION` — falls back to FastDDS, matching Isaac Sim
+
+The MCP server runs separately: `ROSBRIDGE_IP=127.0.0.1 make server-http`.
+
+### Nova Carter topics
+
+| Topic | Type | Notes |
+|---|---|---|
+| `/cmd_vel` | `geometry_msgs/Twist` | Motion control |
+| `/odom` | `nav_msgs/Odometry` | Wheel odometry |
+| `/scan` | `sensor_msgs/LaserScan` | 2D lidar |
+| `/front_3d_lidar/lidar_points` | `sensor_msgs/PointCloud2` | 3D lidar |
+| `/front_stereo_camera/left/image_raw` | `sensor_msgs/Image` | Left stereo camera |
+| `/chassis_imu` | `sensor_msgs/Imu` | IMU |
+
 ## WebMCP dashboard
 
 Source in `dashboard/`. Build: `cd dashboard && node build.mjs`. Deploy: `make deploy-webmcp`.
