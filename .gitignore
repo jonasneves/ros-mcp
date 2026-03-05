@@ -19,8 +19,10 @@ dashboard/dist/
 # Environment
 .env
 
-# Claude Code local settings (user-specific)
-.claude/
+# Claude Code — ignore user-specific files, track shared project config
+.claude/*
+!.claude/skills/
+!.claude/agents/
 
 # OS
 .DS_Store

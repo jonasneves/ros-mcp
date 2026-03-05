@@ -1,4 +1,17 @@
 {
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport sys, json\ndata = json.load(sys.stdin)\npath = data.get('tool_input', {}).get('file_path', '')\nif 'src/ros_mcp/tools/' in path and path.endswith('.py'):\n    import os\n    name = os.path.basename(path)\n    print(f'DASHBOARD SYNC: {name} was modified. Apply the same fix to the corresponding handler in dashboard/ros-webmcp.js, then: cd dashboard && node build.mjs && make deploy-webmcp', file=sys.stderr)\n\""
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "allow": [
       "Bash(xargs -I {} bash -c \"echo ''''=== {} ==='''' && head -20 {}\")",
@@ -67,7 +80,9 @@
       "Bash(gh auth:*)",
       "Bash(curl:*)",
       "Bash(echo done:*)",
-      "Bash(do python3:*)"
+      "Bash(do python3:*)",
+      "Bash(cat:*)",
+      "Bash(npm install:*)"
     ]
   }
 }
