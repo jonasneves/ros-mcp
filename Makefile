@@ -1,4 +1,4 @@
-.DEFAULT_GOAL := help
+.DEFAULT_GOAL := server
 
 COMPOSE := docker compose -f docker/docker-compose.yml
 COMPOSE_ISAAC := docker compose -f docker/docker-compose.isaac-sim.yml
