@@ -1860,7 +1860,7 @@ function chipList(items) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
-const LOCAL_PROXY_URL = "http://127.0.0.1:7337/claude";
+const LOCAL_PROXY_URL = "http://127.0.0.1:7337/v1/messages";
 
 const chatState = {
   provider: "anthropic",
