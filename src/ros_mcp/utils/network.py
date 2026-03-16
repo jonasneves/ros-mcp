@@ -1,6 +1,17 @@
 import platform
+import re
 import socket
 import subprocess
+
+# Matches IPv4, IPv6 (including bracketed), or hostname (alphanumeric + hyphens + dots)
+_VALID_HOST_RE = re.compile(
+    r"^("
+    r"\d{1,3}(\.\d{1,3}){3}"           # IPv4
+    r"|[\da-fA-F:]{2,39}"              # IPv6
+    r"|\[[\da-fA-F:]{2,39}\]"          # bracketed IPv6
+    r"|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*"  # hostname
+    r")$"
+)
 
 
 _OVERALL_STATUS = {
@@ -15,6 +26,14 @@ def ping_ip_and_port(
     ip: str, port: int, ping_timeout: float = 2.0, port_timeout: float = 2.0
 ) -> dict:
     """Ping an IP address and check whether a specific port is open."""
+    if not _VALID_HOST_RE.match(ip):
+        return {
+            "ip": ip,
+            "port": port,
+            "error": "Invalid IP address or hostname format",
+            "overall_status": "invalid_input",
+        }
+
     result = {
         "ip": ip,
         "port": port,

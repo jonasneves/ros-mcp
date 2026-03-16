@@ -299,45 +299,46 @@ def register_action_tools(
                     "error": f"Failed to subscribe to status topic: {send_error}",
                 }
 
-            response = ws_manager.receive(timeout=3.0)
-            if not response:
-                return {
-                    "action_name": action_name,
-                    "success": False,
-                    "error": "No response from action status topic",
-                }
-
             try:
-                response_data = json.loads(response)
-            except json.JSONDecodeError as e:
-                return {"error": f"Failed to parse status response: {e}"}
+                response = ws_manager.receive(timeout=3.0)
+                if not response:
+                    return {
+                        "action_name": action_name,
+                        "success": False,
+                        "error": "No response from action status topic",
+                    }
 
-            if response_data.get("op") == "status" and response_data.get("level") == "error":
-                return {"error": f"Action status error: {response_data.get('msg', 'Unknown error')}"}
+                try:
+                    response_data = json.loads(response)
+                except json.JSONDecodeError as e:
+                    return {"error": f"Failed to parse status response: {e}"}
 
-            status_list = response_data.get("msg", {}).get("status_list")
-            if status_list is None:
-                return {
-                    "action_name": action_name,
-                    "success": True,
-                    "active_goals": [],
-                    "goal_count": 0,
-                    "note": f"No active goals found for action {action_name}",
-                }
+                if response_data.get("op") == "status" and response_data.get("level") == "error":
+                    return {"error": f"Action status error: {response_data.get('msg', 'Unknown error')}"}
 
-            active_goals = []
-            for item in status_list:
-                goal_info = item.get("goal_info", {})
-                status = item.get("status", -1)
-                stamp = goal_info.get("stamp", {})
-                active_goals.append({
-                    "goal_id": goal_info.get("goal_id", {}).get("uuid", "unknown"),
-                    "status": status,
-                    "status_text": ACTION_STATUS_MAP.get(status, "UNKNOWN"),
-                    "timestamp": f"{stamp.get('sec', 0)}.{stamp.get('nanosec', 0)}",
-                })
+                status_list = response_data.get("msg", {}).get("status_list")
+                if status_list is None:
+                    return {
+                        "action_name": action_name,
+                        "success": True,
+                        "active_goals": [],
+                        "goal_count": 0,
+                        "note": f"No active goals found for action {action_name}",
+                    }
 
-            ws_manager.send({"op": "unsubscribe", "topic": status_topic})
+                active_goals = []
+                for item in status_list:
+                    goal_info = item.get("goal_info", {})
+                    status = item.get("status", -1)
+                    stamp = goal_info.get("stamp", {})
+                    active_goals.append({
+                        "goal_id": goal_info.get("goal_id", {}).get("uuid", "unknown"),
+                        "status": status,
+                        "status_text": ACTION_STATUS_MAP.get(status, "UNKNOWN"),
+                        "timestamp": f"{stamp.get('sec', 0)}.{stamp.get('nanosec', 0)}",
+                    })
+            finally:
+                ws_manager.send({"op": "unsubscribe", "topic": status_topic})
 
         return {
             "action_name": action_name,
@@ -456,7 +457,6 @@ def register_action_tools(
             }
 
             if last_feedback:
-                result["success"] = True
                 result["last_feedback"] = last_feedback.get("values", {})
                 result["note"] = "Action timed out, but partial progress was made"
 
