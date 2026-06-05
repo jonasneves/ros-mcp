@@ -3,29 +3,34 @@
 [![Build](https://github.com/jonasneves/ros-mcp/actions/workflows/build-push.yml/badge.svg)](https://github.com/jonasneves/ros-mcp/actions/workflows/build-push.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-Connect AI agents to ROS robots. Exposes topics, services, nodes, parameters, and actions as MCP tools — usable from Claude Desktop, Claude Code, Cursor, or any MCP-compatible client.
+Drive ROS robots from an AI agent: a FastMCP server that reaches a robot over the [rosbridge](https://github.com/RobotWebTools/rosbridge_suite) WebSocket and exposes its topics, services, nodes, parameters, and actions as 37 MCP tools — usable from Claude Code, Claude Desktop, Cursor, or any MCP client.
 
-| Mode | Best for |
-|---|---|
-| **Browser dashboard** | Quickest start, no install |
-| **Python server — stdio** | Claude Code (local) |
-| **Python server — HTTP** | Claude Desktop, Cursor, remote agents |
-| **Remote CI server** | Shared / cloud-hosted setup |
+```
+MCP client ──stdio/HTTP──▶ ros-mcp ──ws :9090──▶ rosbridge ──▶ ROS graph
+(Claude, Cursor)                                              (topics, services,
+                                                               nodes, actions, params)
+```
 
-## How it works
+The browser dashboard skips the Python server: [roslibjs](https://github.com/RobotWebTools/roslibjs) connects straight to rosbridge from the page, with an embedded AI chat panel.
 
-![ROS MCP Server Architecture](diagram.png)
+| Mode | Best for | Bridge path |
+|---|---|---|
+| **Browser dashboard** | Quickest start, no install | page → rosbridge |
+| **Python server — stdio** | Claude Code (local) | client → ros-mcp → rosbridge |
+| **Python server — HTTP** | Claude Desktop, Cursor, remote | client → ros-mcp `:9000` → rosbridge |
+| **Remote CI server** | Shared / cloud-hosted | client → hosted ros-mcp → rosbridge |
 
-The browser dashboard skips the Python server entirely — roslibjs connects directly to rosbridge from the browser, with an embedded AI chat panel.
+See [diagram.png](diagram.png) for the full picture.
 
 ## Quick start
 
+You need a running rosbridge (`ros2 launch rosbridge_server rosbridge_websocket_launch.xml`, default port `9090`) — or use the bundled simulators below.
+
 ```bash
-git clone https://github.com/jonasneves/ros-mcp
-cd ros-mcp
+git clone https://github.com/jonasneves/ros-mcp && cd ros-mcp
 ```
 
-**Browser dashboard** — open [ros-mcp.github.io](https://ros-mcp.github.io), enter your rosbridge WebSocket URL, and connect. No install required.
+**Browser dashboard** — open [ros-mcp.github.io](https://ros-mcp.github.io), enter your rosbridge WebSocket URL, connect. No install.
 
 **Claude Code (stdio)**
 ```bash
@@ -38,29 +43,40 @@ ROSBRIDGE_IP=<robot-ip> make server-http
 make configure-desktop
 ```
 
-**Remote CI server**
+**Remote CI server** — uses the URL published by the GitHub Actions workflow:
 ```bash
 make configure-remote
 ```
 
 ## Docker simulators
 
-**3× Turtlesim** — simulators and rosbridge start automatically, MCP server at `http://localhost:9000/mcp`:
+**3× Turtlesim** — simulators and rosbridge start automatically; MCP server at `http://localhost:9000/mcp`:
 ```bash
 make turtlesim
 ```
 
-**Isaac Sim** — requires Linux with NVIDIA GPU, Isaac Sim installed, and the ROS 2 Bridge extension enabled:
+**Isaac Sim** — Linux + NVIDIA GPU, Isaac Sim installed, ROS 2 Bridge extension enabled:
 ```bash
 make isaac-sim                           # rosbridge (FastDDS, host network)
 ROSBRIDGE_IP=127.0.0.1 make server-http  # MCP server, separate terminal
 ```
-
-On macOS or a remote machine, point directly at a rosbridge already running alongside Isaac Sim: `ROSBRIDGE_IP=<host-ip> make server-http`.
+On macOS or a remote host, point at a rosbridge already running alongside Isaac Sim: `ROSBRIDGE_IP=<host-ip> make server-http`.
 
 ## Tools
 
-30+ tools covering topics, services, nodes, actions, parameters, robot description, joint states, images, and motion control. See [docs/tools.md](docs/tools.md) for the full reference.
+| Group | Tools |
+|---|---|
+| Connection | `connect_to_robot`, `ping_robot` |
+| Topics | `get_topics`, `get_topic_type`, `get_topic_details`, `get_message_details`, `subscribe_once`, `subscribe_for_duration`, `publish_once`, `publish_for_durations` |
+| Motion | `turn_by_angle`, `move_by_distance`, `move_robots` |
+| Services | `get_services`, `get_service_type`, `get_service_details`, `call_service` |
+| Nodes | `get_nodes`, `get_connected_robots`, `get_node_details` |
+| Actions | `get_actions`, `get_action_details`, `send_action_goal`, `get_action_status`, `cancel_action_goal` |
+| Parameters | `get_parameter`, `set_parameter`, `has_parameter`, `delete_parameter`, `get_parameters`, `get_parameter_details` |
+| Robot config | `detect_ros_version`, `get_verified_robots_list`, `get_verified_robot_spec`, `get_robot_description`, `get_joint_states` |
+| Images | `analyze_previously_received_image` |
+
+Full signatures, units, and examples: [docs/tools.md](docs/tools.md).
 
 ## Configuration
 
@@ -68,7 +84,7 @@ On macOS or a remote machine, point directly at a rosbridge already running alon
 |---|---|---|
 | `ROSBRIDGE_IP` | `127.0.0.1` | rosbridge host |
 | `ROSBRIDGE_PORT` | `9090` | rosbridge port |
-| `ROS_DEFAULT_TIMEOUT` | `5.0` | Timeout in seconds |
+| `ROS_DEFAULT_TIMEOUT` | `5.0` | Tool timeout in seconds |
 
 ## License
 
