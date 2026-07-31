@@ -10,22 +10,26 @@ from ros_mcp.utils.websocket import WebSocketManager, parse_json
 def _detect_ros_version(ws_manager: WebSocketManager) -> dict:
     """Detect ROS version and distro via rosbridge WebSocket."""
     with ws_manager:
-        response = ws_manager.request({
-            "op": "call_service",
-            "id": "ros2_version_check",
-            "service": "/rosapi/get_ros_version",
-            "args": {},
-        })
+        response = ws_manager.request(
+            {
+                "op": "call_service",
+                "id": "ros2_version_check",
+                "service": "/rosapi/get_ros_version",
+                "args": {},
+            }
+        )
         values = response.get("values") if response else None
         if isinstance(values, dict) and "version" in values:
             return {"version": values["version"], "distro": values.get("distro")}
 
-        response = ws_manager.request({
-            "op": "call_service",
-            "id": "ros1_distro_check",
-            "service": "/rosapi/get_param",
-            "args": {"name": "/rosdistro"},
-        })
+        response = ws_manager.request(
+            {
+                "op": "call_service",
+                "id": "ros1_distro_check",
+                "service": "/rosapi/get_param",
+                "args": {"name": "/rosdistro"},
+            }
+        )
         value = response.get("values") if response else None
         if value:
             distro = value.get("value") if isinstance(value, dict) else value
@@ -129,12 +133,14 @@ def register_robot_config_tools(mcp: FastMCP, ws_manager: WebSocketManager) -> N
         timeout_val = ws_manager.default_timeout if timeout is None else float(timeout)
 
         with ws_manager:
-            send_error = ws_manager.send({
-                "op": "subscribe",
-                "topic": topic,
-                "type": "sensor_msgs/JointState",
-                "queue_length": 1,
-            })
+            send_error = ws_manager.send(
+                {
+                    "op": "subscribe",
+                    "topic": topic,
+                    "type": "sensor_msgs/JointState",
+                    "queue_length": 1,
+                }
+            )
             if send_error:
                 return {"error": f"Failed to subscribe: {send_error}"}
 

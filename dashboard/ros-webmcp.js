@@ -1177,6 +1177,26 @@ async function publishForDurations(topic, msgType, messages, durations) {
   rosTopic.unadvertise();
 }
 
+// Advertise, publish a velocity for `duration`, then always publish a zero-velocity
+// stop before unadvertising. Mirrors _publish_motion in src/ros_mcp/tools/topics.py.
+// The stop lives in `finally` so an aborted or failed motion still leaves the robot
+// stopped — a moving robot is the one failure mode that must not survive an error.
+async function publishMotion(topic, msgType, { linearX = 0, angularZ = 0 }, duration) {
+  if (!state.ros || !state.connected) throw new Error("Not connected");
+  const stamped = msgType.includes("TwistStamped");
+  const header = { stamp: { sec: 0, nanosec: 0 }, frame_id: "" };
+  const wrap = twist => (stamped ? { header, twist } : twist);
+  const rosTopic = new ROSLIB.Topic({ ros: state.ros, name: topic, messageType: msgType });
+  rosTopic.advertise();
+  try {
+    rosTopic.publish(new ROSLIB.Message(wrap({ linear: { x: linearX }, angular: { z: angularZ } })));
+    await sleep(duration * 1000);
+  } finally {
+    rosTopic.publish(new ROSLIB.Message(wrap({ linear: { x: 0 }, angular: { z: 0 } })));
+    rosTopic.unadvertise();
+  }
+}
+
 async function getTopicDetails(topic) {
   const [typeRes, pubRes, subRes] = await Promise.all([
     callRosapi("/rosapi/topic_type", "rosapi/TopicType", { topic }),
@@ -1442,6 +1462,69 @@ const TOOLS = [
     handler: async ({ topic, msg_type, messages, durations }) => {
       await publishForDurations(topic, msg_type, messages, durations);
       return { published: messages.length, topic };
+    },
+  },
+  {
+    name: "turn_by_angle",
+    description:
+      "Rotate a robot in place by an angle in degrees. Computes duration = (|angle_deg| x pi/180) / angular_velocity " +
+      "and sends a zero-velocity stop when finished. Prefer this over publish_for_durations for rotation — it removes " +
+      "the error-prone duration maths from the caller. Positive angle_deg = counter-clockwise, negative = clockwise. " +
+      "Units: angle_deg in degrees, angular_velocity in rad/s.\n" +
+      "Example — turn turtle1 90 degrees counter-clockwise at 1.0 rad/s:\n" +
+      "turn_by_angle(cmd_vel_topic='/ts1/turtle1/cmd_vel', msg_type='geometry_msgs/Twist', angle_deg=90)",
+    parameters: {
+      type: "object",
+      properties: {
+        cmd_vel_topic:    { type: "string", description: "e.g. /ts1/turtle1/cmd_vel" },
+        msg_type:         { type: "string", description: "e.g. geometry_msgs/Twist" },
+        angle_deg:        { type: "number", description: "Degrees; positive = counter-clockwise" },
+        angular_velocity: { type: "number", description: "rad/s, must be > 0", default: 1.0 },
+      },
+      required: ["cmd_vel_topic", "msg_type", "angle_deg"],
+    },
+    handler: async ({ cmd_vel_topic, msg_type, angle_deg, angular_velocity = 1.0 }) => {
+      if (angular_velocity <= 0) throw new Error("angular_velocity must be > 0");
+      const angleRad = (angle_deg * Math.PI) / 180;
+      const duration = Math.abs(angleRad) / angular_velocity;
+      await publishMotion(cmd_vel_topic, msg_type, { angularZ: Math.sign(angleRad) * angular_velocity }, duration);
+      return {
+        success: true,
+        angle_deg,
+        angle_rad: Number(angleRad.toFixed(4)),
+        angular_velocity,
+        duration_s: Number(duration.toFixed(4)),
+      };
+    },
+  },
+  {
+    name: "move_by_distance",
+    description:
+      "Move a robot forward or backward by a distance in metres. Computes duration = |distance_m| / linear_velocity " +
+      "and sends a zero-velocity stop when finished. Prefer this over publish_for_durations for straight-line motion. " +
+      "Positive distance_m = forward, negative = backward. Units: distance_m in metres, linear_velocity in m/s.\n" +
+      "Example — move turtle1 forward 1 metre at 0.5 m/s:\n" +
+      "move_by_distance(cmd_vel_topic='/ts1/turtle1/cmd_vel', msg_type='geometry_msgs/Twist', distance_m=1.0)",
+    parameters: {
+      type: "object",
+      properties: {
+        cmd_vel_topic:   { type: "string", description: "e.g. /ts1/turtle1/cmd_vel" },
+        msg_type:        { type: "string", description: "e.g. geometry_msgs/Twist" },
+        distance_m:      { type: "number", description: "Metres; positive = forward" },
+        linear_velocity: { type: "number", description: "m/s, must be > 0", default: 0.5 },
+      },
+      required: ["cmd_vel_topic", "msg_type", "distance_m"],
+    },
+    handler: async ({ cmd_vel_topic, msg_type, distance_m, linear_velocity = 0.5 }) => {
+      if (linear_velocity <= 0) throw new Error("linear_velocity must be > 0");
+      const duration = Math.abs(distance_m) / linear_velocity;
+      await publishMotion(cmd_vel_topic, msg_type, { linearX: Math.sign(distance_m) * linear_velocity }, duration);
+      return {
+        success: true,
+        distance_m,
+        linear_velocity,
+        duration_s: Number(duration.toFixed(4)),
+      };
     },
   },
   {

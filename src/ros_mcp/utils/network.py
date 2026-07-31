@@ -6,9 +6,9 @@ import subprocess
 # Matches IPv4, IPv6 (including bracketed), or hostname (alphanumeric + hyphens + dots)
 _VALID_HOST_RE = re.compile(
     r"^("
-    r"\d{1,3}(\.\d{1,3}){3}"           # IPv4
-    r"|[\da-fA-F:]{2,39}"              # IPv6
-    r"|\[[\da-fA-F:]{2,39}\]"          # bracketed IPv6
+    r"\d{1,3}(\.\d{1,3}){3}"  # IPv4
+    r"|[\da-fA-F:]{2,39}"  # IPv6
+    r"|\[[\da-fA-F:]{2,39}\]"  # bracketed IPv6
     r"|[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*"  # hostname
     r")$"
 )
@@ -102,9 +102,7 @@ def _check_port(result: dict, ip: str, port: int, timeout: float) -> None:
             )
 
     except socket.timeout:
-        result["port_check"]["error"] = (
-            f"Port {port} connection timeout after {timeout} seconds"
-        )
+        result["port_check"]["error"] = f"Port {port} connection timeout after {timeout} seconds"
     except socket.gaierror as e:
         result["port_check"]["error"] = f"DNS resolution error: {e}"
     except Exception as e:

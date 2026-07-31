@@ -59,13 +59,15 @@ def _parse_typedef(typedefs: list) -> dict:
 def _get_available_services(ws_manager: WebSocketManager) -> list | None:
     """Return the list of available rosbridge services, or None on error."""
     with ws_manager:
-        response = ws_manager.request({
-            "op": "call_service",
-            "service": "/rosapi/services",
-            "type": "rosapi/Services",
-            "args": {},
-            "id": "check_available_services",
-        })
+        response = ws_manager.request(
+            {
+                "op": "call_service",
+                "service": "/rosapi/services",
+                "type": "rosapi/Services",
+                "args": {},
+                "id": "check_available_services",
+            }
+        )
     if extract_service_failure_error(response):
         return None
     return response.get("values", {}).get("services", [])
@@ -286,12 +288,14 @@ def register_action_tools(
         status_topic = f"{action_name}/_action/status"
 
         with ws_manager:
-            send_error = ws_manager.send({
-                "op": "subscribe",
-                "topic": status_topic,
-                "type": "action_msgs/msg/GoalStatusArray",
-                "id": f"get_action_status_{action_name.replace('/', '_')}",
-            })
+            send_error = ws_manager.send(
+                {
+                    "op": "subscribe",
+                    "topic": status_topic,
+                    "type": "action_msgs/msg/GoalStatusArray",
+                    "id": f"get_action_status_{action_name.replace('/', '_')}",
+                }
+            )
             if send_error:
                 return {
                     "action_name": action_name,
@@ -314,7 +318,9 @@ def register_action_tools(
                     return {"error": f"Failed to parse status response: {e}"}
 
                 if response_data.get("op") == "status" and response_data.get("level") == "error":
-                    return {"error": f"Action status error: {response_data.get('msg', 'Unknown error')}"}
+                    return {
+                        "error": f"Action status error: {response_data.get('msg', 'Unknown error')}"
+                    }
 
                 status_list = response_data.get("msg", {}).get("status_list")
                 if status_list is None:
@@ -331,12 +337,14 @@ def register_action_tools(
                     goal_info = item.get("goal_info", {})
                     status = item.get("status", -1)
                     stamp = goal_info.get("stamp", {})
-                    active_goals.append({
-                        "goal_id": goal_info.get("goal_id", {}).get("uuid", "unknown"),
-                        "status": status,
-                        "status_text": ACTION_STATUS_MAP.get(status, "UNKNOWN"),
-                        "timestamp": f"{stamp.get('sec', 0)}.{stamp.get('nanosec', 0)}",
-                    })
+                    active_goals.append(
+                        {
+                            "goal_id": goal_info.get("goal_id", {}).get("uuid", "unknown"),
+                            "status": status,
+                            "status_text": ACTION_STATUS_MAP.get(status, "UNKNOWN"),
+                            "timestamp": f"{stamp.get('sec', 0)}.{stamp.get('nanosec', 0)}",
+                        }
+                    )
             finally:
                 ws_manager.send({"op": "unsubscribe", "topic": status_topic})
 
@@ -386,14 +394,16 @@ def register_action_tools(
         goal_id = f"goal_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
 
         with ws_manager:
-            send_error = ws_manager.send({
-                "op": "send_action_goal",
-                "id": goal_id,
-                "action": action_name,
-                "action_type": action_type,
-                "args": goal,
-                "feedback": True,
-            })
+            send_error = ws_manager.send(
+                {
+                    "op": "send_action_goal",
+                    "id": goal_id,
+                    "action": action_name,
+                    "action_type": action_type,
+                    "args": goal,
+                    "feedback": True,
+                }
+            )
             if send_error:
                 return {
                     "action": action_name,
@@ -479,12 +489,14 @@ def register_action_tools(
             return {"error": "Goal ID cannot be empty"}
 
         with ws_manager:
-            send_error = ws_manager.send({
-                "op": "cancel_action_goal",
-                "id": goal_id,
-                "action": action_name,
-                "feedback": True,
-            })
+            send_error = ws_manager.send(
+                {
+                    "op": "cancel_action_goal",
+                    "id": goal_id,
+                    "action": action_name,
+                    "feedback": True,
+                }
+            )
             if send_error:
                 return {
                     "action": action_name,

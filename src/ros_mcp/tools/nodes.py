@@ -52,13 +52,15 @@ def register_node_tools(
     )
     def get_connected_robots() -> dict:
         with ws_manager:
-            response = ws_manager.request({
-                "op": "call_service",
-                "service": "/rosapi/topics",
-                "type": "rosapi/Topics",
-                "args": {},
-                "id": "get_robots_topics",
-            })
+            response = ws_manager.request(
+                {
+                    "op": "call_service",
+                    "service": "/rosapi/topics",
+                    "type": "rosapi/Topics",
+                    "args": {},
+                    "id": "get_robots_topics",
+                }
+            )
 
         if err := extract_service_failure_error(response):
             return err

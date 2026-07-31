@@ -1,0 +1,55 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint
+        run: ruff check .
+
+      # The repo declares a ruff format style in pyproject.toml; without this
+      # gate the declaration drifts from the tree (9 files had drifted by the
+      # time it was first run).
+      - name: Format
+        run: ruff format --check .
+
+      - name: Smoke test
+        run: bash test/smoke-makefile.sh
+
+  dashboard:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The dashboard ships unbundled: a syntax error reaches production as a
+      # blank page, since nothing else parses ros-webmcp.js before deploy.
+      - name: Parse dashboard sources
+        run: node --check dashboard/ros-webmcp.js
+
+      - name: Build
+        run: |
+          cd dashboard
+          npm ci
+          node build.mjs

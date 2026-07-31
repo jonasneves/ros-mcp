@@ -50,8 +50,18 @@ _COMPRESSED_FORMATS = ("jpeg", "jpg", "png", "bmp", "compressed")
 
 # sensor_msgs/Image standard encodings (substring-matched to cover variants like bayer_rggb8)
 _IMAGE_ENCODINGS = (
-    "rgb8", "rgba8", "bgr8", "bgra8", "mono8", "mono16",
-    "8uc1", "8uc3", "8uc4", "16uc1", "bayer", "yuv",
+    "rgb8",
+    "rgba8",
+    "bgr8",
+    "bgra8",
+    "mono8",
+    "mono16",
+    "8uc1",
+    "8uc3",
+    "8uc4",
+    "16uc1",
+    "bayer",
+    "yuv",
 )
 
 
@@ -247,9 +257,7 @@ class WebSocketManager:
             try:
                 url = f"ws://{self.ip}:{self.port}"
                 self.ws = websocket.create_connection(url, timeout=self.default_timeout)
-                print(
-                    f"[WebSocket] Connected ({self.default_timeout}s timeout)", file=sys.stderr
-                )
+                print(f"[WebSocket] Connected ({self.default_timeout}s timeout)", file=sys.stderr)
                 return None
             except Exception as e:
                 error_msg = f"[WebSocket] Connection error: {e}"

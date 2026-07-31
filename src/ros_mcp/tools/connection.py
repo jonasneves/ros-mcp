@@ -34,7 +34,9 @@ def register_connection_tools(
 
         return {
             "message": f"WebSocket IP set to {resolved_ip}:{resolved_port}",
-            "connectivity_test": ping_ip_and_port(resolved_ip, resolved_port, ping_timeout, port_timeout),
+            "connectivity_test": ping_ip_and_port(
+                resolved_ip, resolved_port, ping_timeout, port_timeout
+            ),
         }
 
     @mcp.tool(

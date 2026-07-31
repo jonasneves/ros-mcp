@@ -90,11 +90,18 @@ configure-remote:
 	echo "Configuring Claude with $${URL}/mcp"; \
 	claude mcp add --transport http ros-mcp $${URL}/mcp
 
+# Pages builds from the pushed tree, so the local build here is a pre-flight
+# check only (dashboard/dist/ is gitignored and never committed). Refuses to
+# push a dirty tree: staging only dashboard/ used to ship the JS half of a
+# change while leaving its Python counterpart behind.
 deploy-webmcp:
-	cd dashboard && node build.mjs
-	git add dashboard/
-	git diff --staged --quiet || git commit -m "chore: build dashboard"
+	@node --check dashboard/ros-webmcp.js
+	@cd dashboard && node build.mjs >/dev/null
+	@git diff --quiet && git diff --staged --quiet || { \
+		echo "Uncommitted changes — commit them first, then re-run:"; \
+		git status --short; exit 1; }
 	git push
+	@echo "Pushed. Watch the deploy: make status-webmcp"
 
 status-webmcp:
 	gh run list --repo jonasneves/ros-mcp --workflow deploy.yml --limit 3

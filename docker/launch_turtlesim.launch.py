@@ -16,12 +16,14 @@ from launch_ros.actions import Node
 def generate_launch_description():
     namespace = os.environ.get("TURTLESIM_NAMESPACE", "ts1")
 
-    return LaunchDescription([
-        Node(
-            package="turtlesim",
-            executable="turtlesim_node",
-            name="turtlesim",
-            namespace=namespace,
-            output="screen",
-        ),
-    ])
+    return LaunchDescription(
+        [
+            Node(
+                package="turtlesim",
+                executable="turtlesim_node",
+                name="turtlesim",
+                namespace=namespace,
+                output="screen",
+            ),
+        ]
+    )

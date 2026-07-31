@@ -83,10 +83,17 @@ def register_topic_tools(
             return f"Failed to advertise topic: {send_error}"
 
         try:
-            ws_manager.send({"op": "publish", "topic": topic, "msg": _wrap_twist(msg_type, velocity_msg)})
+            ws_manager.send(
+                {"op": "publish", "topic": topic, "msg": _wrap_twist(msg_type, velocity_msg)}
+            )
             time.sleep(duration)
-            ws_manager.send({"op": "publish", "topic": topic, "msg": _wrap_twist(msg_type, _TWIST_STOP)})
         finally:
+            # The stop belongs in `finally`: if the sleep is interrupted or the
+            # publish raises, the robot must still be commanded to stop. A robot
+            # left moving is the one failure mode that must not survive an error.
+            ws_manager.send(
+                {"op": "publish", "topic": topic, "msg": _wrap_twist(msg_type, _TWIST_STOP)}
+            )
             ws_manager.send({"op": "unadvertise", "topic": topic})
         return None
 
@@ -180,33 +187,39 @@ def register_topic_tools(
         topic_slug = topic.replace("/", "_")
 
         with ws_manager:
-            type_resp = ws_manager.request({
-                "op": "call_service",
-                "service": "/rosapi/topic_type",
-                "type": "rosapi/TopicType",
-                "args": {"topic": topic},
-                "id": f"get_topic_type_{topic_slug}",
-            })
+            type_resp = ws_manager.request(
+                {
+                    "op": "call_service",
+                    "service": "/rosapi/topic_type",
+                    "type": "rosapi/TopicType",
+                    "args": {"topic": topic},
+                    "id": f"get_topic_type_{topic_slug}",
+                }
+            )
             if "values" in type_resp:
                 result["type"] = type_resp["values"].get("type", "unknown")
 
-            pub_resp = ws_manager.request({
-                "op": "call_service",
-                "service": "/rosapi/publishers",
-                "type": "rosapi/Publishers",
-                "args": {"topic": topic},
-                "id": f"get_publishers_{topic_slug}",
-            })
+            pub_resp = ws_manager.request(
+                {
+                    "op": "call_service",
+                    "service": "/rosapi/publishers",
+                    "type": "rosapi/Publishers",
+                    "args": {"topic": topic},
+                    "id": f"get_publishers_{topic_slug}",
+                }
+            )
             if "values" in pub_resp:
                 result["publishers"] = pub_resp["values"].get("publishers", [])
 
-            sub_resp = ws_manager.request({
-                "op": "call_service",
-                "service": "/rosapi/subscribers",
-                "type": "rosapi/Subscribers",
-                "args": {"topic": topic},
-                "id": f"get_subscribers_{topic_slug}",
-            })
+            sub_resp = ws_manager.request(
+                {
+                    "op": "call_service",
+                    "service": "/rosapi/subscribers",
+                    "type": "rosapi/Subscribers",
+                    "args": {"topic": topic},
+                    "id": f"get_subscribers_{topic_slug}",
+                }
+            )
             if "values" in sub_resp:
                 result["subscribers"] = sub_resp["values"].get("subscribers", [])
 
@@ -667,16 +680,20 @@ def register_topic_tools(
                 return {"error": f"Robot {i}: linear_x and angular_z must be numbers"}
 
             base_vel = {"linear": {"x": linear_x}, "angular": {"z": angular_z}}
-            prepared.append({
-                "topic": topic,
-                "msg_type": msg_type,
-                "vel_msg": _wrap_twist(msg_type, base_vel),
-                "stop_msg": _wrap_twist(msg_type, _TWIST_STOP),
-            })
+            prepared.append(
+                {
+                    "topic": topic,
+                    "msg_type": msg_type,
+                    "vel_msg": _wrap_twist(msg_type, base_vel),
+                    "stop_msg": _wrap_twist(msg_type, _TWIST_STOP),
+                }
+            )
 
         with ws_manager:
             for r in prepared:
-                send_error = ws_manager.send({"op": "advertise", "topic": r["topic"], "type": r["msg_type"]})
+                send_error = ws_manager.send(
+                    {"op": "advertise", "topic": r["topic"], "type": r["msg_type"]}
+                )
                 if send_error:
                     return {"error": f"Failed to advertise {r['topic']}: {send_error}"}
             try:
