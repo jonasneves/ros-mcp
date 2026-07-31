@@ -1949,6 +1949,92 @@ function chipList(items) {
 
 const LOCAL_PROXY_URL = "http://127.0.0.1:7337/v1/messages";
 
+// termd runs the agent loop on this machine and calls back here for every tool.
+// A page may not reach 127.0.0.1 itself — mixed content from https, CORS from
+// any other port — so the bridge extension relays it from its own origin.
+const TERMD_URL = "http://127.0.0.1:5000";
+const TERMD_EXTENSION_ID = "mgcgjhbjenjaboahijedcngmgigofkhh";
+
+let termdPort = null;
+function getTermdPort() {
+  if (termdPort) return termdPort;
+  if (typeof chrome === "undefined" || !chrome.runtime?.connect) return null;
+  try {
+    termdPort = chrome.runtime.connect(TERMD_EXTENSION_ID);
+    termdPort.onDisconnect.addListener(() => { termdPort = null; });
+  } catch { termdPort = null; }
+  return termdPort;
+}
+
+function termdSend(msg, onChunk) {
+  return new Promise((resolve, reject) => {
+    const port = getTermdPort();
+    if (!port) return reject(new Error("termd bridge extension not installed"));
+    const id = Math.random().toString(36).slice(2);
+    const onMessage = (m) => {
+      if (m.id !== id) return;
+      if (m.type === "chunk") return onChunk?.(m.text);
+      port.onMessage.removeListener(onMessage);
+      if (m.type === "error") reject(new Error(m.status ? `termd ${m.status}` : m.error));
+      else resolve(m);
+    };
+    port.onMessage.addListener(onMessage);
+    port.postMessage({ ...msg, id });
+  });
+}
+
+async function checkTermd() {
+  try {
+    const pong = await Promise.race([
+      termdSend({ type: "ping" }),
+      new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 600)),
+    ]);
+    if (pong?.type === "pong") return true;
+  } catch {}
+  if (location.protocol === "https:") return false;   // direct probe cannot succeed
+  try { return (await fetch(`${TERMD_URL}/health`, { signal: AbortSignal.timeout(800) })).ok; }
+  catch { return false; }
+}
+
+// termd owns the conversation and the loop, so this streams and answers rather
+// than managing history. chatExecuteToolCall is reused untouched: the tool cards
+// and any gating behave the same wherever the loop runs.
+async function runConversationTermd(signal) {
+  const prompt = `${getSystemPrompt()}\n\n---\n\n${chatState.convMsgs.filter(m => m.role === "user").pop()?.content ?? ""}`;
+  const tools = getActiveTools().map(t => ({
+    name: t.name, description: t.description,
+    input_schema: t.parameters || { type: "object", properties: {} },
+  }));
+  const model = chatState.model && chatState.model !== "default" ? chatState.model : undefined;
+
+  let buf = "", textEl = null, text = "";
+  const onChunk = async (chunk) => {
+    buf += chunk;
+    const lines = buf.split("\n"); buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      let e; try { e = JSON.parse(line.slice(6)); } catch { continue; }
+      if (e.type === "text") {
+        if (!textEl) { hideChatSpinner(); textEl = appendChatMsg("assistant", ""); }
+        text += e.text; textEl.innerHTML = renderMarkdown(text);
+      } else if (e.type === "tool_request") {
+        hideChatSpinner();
+        appendChatToolCall(e.requestId, e.name);
+        const result = await chatExecuteToolCall(e.name, e.input || {});
+        updateChatToolCall(e.requestId, result, e.input || {});
+        await termdSend({ type: "request", path: `/agent/tool/${encodeURIComponent(e.token)}`,
+                          body: result?.error ? { error: result.error } : { content: result } });
+        showChatSpinner();
+      } else if (e.type === "result" && e.isError) {
+        appendChatMsg("error", e.text || "termd turn failed.");
+      }
+    }
+  };
+  await termdSend({ type: "request", path: "/agent/stream",
+                    body: { prompt, tools, maxTurns: 24, ...(model ? { model } : {}) } }, onChunk);
+  hideChatSpinner();
+}
+
 const chatState = {
   provider: "anthropic",
   model: "claude-sonnet-5",
@@ -1996,6 +2082,12 @@ function clearChatMessages() {
 }
 
 function initChat() {
+  // Reveal the local-agent options only if a daemon actually answers, so the
+  // menu never offers a transport that cannot work from this page.
+  checkTermd().then(up => {
+    document.querySelectorAll('#chat-model-select option[value^="termd:"]')
+      .forEach(o => { o.hidden = !up; });
+  });
   const keyInput = document.getElementById("chat-api-key");
   keyInput.value = chatState.claudeKey;
 
@@ -2078,7 +2170,8 @@ function applyModelSelection(value) {
   chatState.model = value.slice(colonIdx + 1);
   const isGitHub = chatState.provider === "github";
   const isLocal  = chatState.provider === "local";
-  document.getElementById("chat-claude-bar").style.display = (isGitHub || isLocal) ? "none" : "";
+  const isTermd  = chatState.provider === "termd";
+  document.getElementById("chat-claude-bar").style.display = (isGitHub || isLocal || isTermd) ? "none" : "";
   document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
   const noticeDismissed = !!localStorage.getItem("webmcp-github-notice-dismissed");
   document.getElementById("github-notice").hidden = !isGitHub || noticeDismissed;
@@ -2192,7 +2285,7 @@ async function sendChatMsg() {
 
   const keyByProvider = { github: chatState.githubAuth?.token, local: null, anthropic: chatState.claudeKey };
   const key = keyByProvider[chatState.provider] ?? chatState.claudeKey;
-  if (chatState.provider !== "local" && !key) {
+  if (chatState.provider !== "local" && chatState.provider !== "termd" && !key) {
     toast(chatState.provider === "github" ? "Connect GitHub above" : "Enter your Anthropic API key first", "error");
     return;
   }
@@ -2210,6 +2303,8 @@ async function sendChatMsg() {
   try {
     if (chatState.provider === "github") {
       await runConversationGitHub(key, chatState.abortCtrl.signal);
+    } else if (chatState.provider === "termd") {
+      await runConversationTermd(chatState.abortCtrl.signal);
     } else if (chatState.provider === "local") {
       await runConversationClaude(null, chatState.abortCtrl.signal, LOCAL_PROXY_URL);
     } else {
