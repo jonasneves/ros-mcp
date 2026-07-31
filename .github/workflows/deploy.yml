@@ -34,6 +34,23 @@ jobs:
           npm ci
           node build.mjs
 
+      # The dashboard loads JS from third-party hosts at runtime. A green build
+      # says nothing about whether those URLs still resolve — when neevs.io was
+      # renamed to neves.cloud, deploys stayed green while the live page was
+      # dead. Fail the deploy instead of shipping a page whose imports 404.
+      - name: Check remote JS dependencies resolve
+        run: |
+          cd dashboard
+          grep -ohE "https://[^\"']+\.js" index.html ros-webmcp.js | sort -u > /tmp/remote-deps.txt
+          fail=0
+          while IFS= read -r u; do
+            [ -n "$u" ] || continue
+            code=$(curl -sSL -o /dev/null -w '%{http_code}' --max-time 20 "$u") || code=000
+            printf '%s  %s\n' "$code" "$u"
+            [ "$code" = 200 ] || fail=1
+          done < /tmp/remote-deps.txt
+          exit $fail
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dashboard/dist

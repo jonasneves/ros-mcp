@@ -44,6 +44,20 @@ make deploy-webmcp
 
 The user interacts with ROS via the deployed dashboard at https://ros-mcp.github.io — not the Python server directly. A bug fixed in Python but not in JS will silently persist in production.
 
+`ros-mcp.github.io` is a short-URL redirect served from the `ros-mcp/ros-mcp.github.io` repo; it points at this repo's own Pages deploy at https://jonasneves.com/ros-mcp/. Debug against that canonical URL.
+
+## Never statically import a third-party URL
+
+`ros-webmcp.js` loads as `type="module"`, so a failed top-level `import` aborts the entire module: the static HTML paints, and every listener, the rosbridge connect, and WebMCP tool registration are silently dead. The page looks fine and does nothing.
+
+Load remote modules on demand, inside the handler that needs them:
+
+```js
+const { connectGitHub } = await import(AUTH_MODULE_URL);
+```
+
+A moved host then degrades one feature instead of the whole app. `deploy.yml` gates deploys on every remote JS URL in `index.html` / `ros-webmcp.js` still returning 200 — a green build alone proves nothing about runtime reachability. (2026-07-31: `neevs.io` was renamed to `neves.cloud` and the old path 404'd — Pages deploys stayed green for months while the live page was dead.)
+
 ## DDS networking — turtlesim vs Isaac Sim
 
 These two setups are incompatible. Never reuse compose files between them.

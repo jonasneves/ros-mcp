@@ -62,4 +62,8 @@ The MCP server runs separately: `ROSBRIDGE_IP=127.0.0.1 make server-http`.
 
 Source in `dashboard/`. Build: `cd dashboard && node build.mjs`. Deploy: `make deploy-webmcp`.
 
-**The dashboard has its own parallel JS implementation of every tool** (`dashboard/ros-webmcp.js`). Any fix to a tool in `src/ros_mcp/tools/` must also be applied to the corresponding handler in `ros-webmcp.js`, then rebuilt and redeployed. The user interacts with ROS via the deployed dashboard at https://ros-mcp.github.io — not via the Python server directly.
+**The dashboard has its own parallel JS implementation of every tool** (`dashboard/ros-webmcp.js`). Any fix to a tool in `src/ros_mcp/tools/` must also be applied to the corresponding handler in `ros-webmcp.js`, then rebuilt and redeployed. The user interacts with ROS via the deployed dashboard at https://ros-mcp.github.io — not via the Python server directly. That is a short-URL redirect served from the `ros-mcp/ros-mcp.github.io` repo; it points at this repo's own Pages deploy at https://jonasneves.com/ros-mcp/. Debug against that canonical URL.
+
+### Never statically import a third-party URL
+
+`ros-webmcp.js` is loaded as `type="module"`. A failed top-level `import` aborts the whole module, so the static HTML still paints while every listener, the rosbridge connect, and WebMCP tool registration are silently dead — the page looks fine and does nothing. Load remote modules on demand inside the handler that needs them (`await import(AUTH_MODULE_URL)`), so a moved host degrades one feature instead of the app. A green build does not catch this, so `deploy.yml` gates on the remote URLs still resolving. (2026-07-31: `neevs.io` was renamed to `neves.cloud` and the old path 404'd — Pages deploys stayed green for months while the live page was dead.)

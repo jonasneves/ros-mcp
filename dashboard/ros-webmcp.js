@@ -1,4 +1,8 @@
-import { GITHUB_CLIENT_ID, OAUTH_CALLBACK_ORIGIN, connectGitHub } from 'https://neevs.io/auth/connect.js';
+// Loaded on demand, never as a top-level import: a static `import` of a
+// third-party URL takes the whole module down if that URL ever moves, so the
+// page renders but nothing is wired up. 2026-07-31: neevs.io was renamed to
+// neves.cloud and the old path started 404ing, killing the entire dashboard.
+const AUTH_MODULE_URL = "https://auth.neves.cloud/lib.js";
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -2026,6 +2030,12 @@ function updateGitHubAuthBar() {
       connectBtn.textContent = "Connecting…";
       connectBtn.disabled = true;
       try {
+        let connectGitHub;
+        try {
+          ({ connectGitHub } = await import(AUTH_MODULE_URL));
+        } catch {
+          throw new Error(`GitHub sign-in unavailable (${AUTH_MODULE_URL} unreachable). Use an API key or the local proxy instead.`);
+        }
         chatState.githubAuth = await connectGitHub('read:user', 'ros-mcp');
         localStorage.setItem("webmcp-gh-auth", JSON.stringify(chatState.githubAuth));
         updateGitHubAuthBar();
