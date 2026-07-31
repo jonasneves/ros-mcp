@@ -1951,7 +1951,7 @@ const LOCAL_PROXY_URL = "http://127.0.0.1:7337/v1/messages";
 
 const chatState = {
   provider: "anthropic",
-  model: "claude-sonnet-4-6",
+  model: "claude-sonnet-5",
   claudeKey: localStorage.getItem("webmcp-claude-key") || "",
   githubAuth: JSON.parse(localStorage.getItem("webmcp-gh-auth") || "null"), // {token, username}
   convMsgs: [],  // raw API message history (provider-specific format)
@@ -2000,7 +2000,7 @@ function initChat() {
   keyInput.value = chatState.claudeKey;
 
   const sel = document.getElementById("chat-model-select");
-  const saved = localStorage.getItem("webmcp-chat-model") || "anthropic:claude-sonnet-4-6";
+  const saved = localStorage.getItem("webmcp-chat-model") || "anthropic:claude-sonnet-5";
   sel.value = saved;
   applyModelSelection(saved);
 
@@ -2242,7 +2242,9 @@ async function runConversationClaude(apiKey, signal, url = "https://api.anthropi
         headers,
         body: JSON.stringify({
           model: chatState.model,
-          max_tokens: 4096,
+          // Thinking shares this budget from Sonnet 5 on, and the request is
+          // streamed, so a tight cap only truncates mid-answer.
+          max_tokens: 16000,
           system: getSystemPrompt(),
           messages: chatState.convMsgs,
           tools: getClaudeTools(),
@@ -2278,6 +2280,12 @@ async function runConversationClaude(apiKey, signal, url = "https://api.anthropi
               hideChatSpinner();
               currentTextContent = block.text || "";
               currentTextEl = appendChatMsg("assistant", currentTextContent);
+            } else if (block.type === "thinking") {
+              // Must go back to the same model unchanged, signature included, or
+              // the next turn of a tool-use loop is rejected. The text is empty
+              // unless summarized display is requested; the signature is the part
+              // that matters.
+              contentBlocks.push({ type: "thinking", thinking: block.thinking || "", signature: block.signature || "" });
             } else if (block.type === "tool_use") {
               contentBlocks.push({ type: "tool_use", id: block.id, name: block.name, input: {} });
               currentToolInput = "";
@@ -2297,6 +2305,12 @@ async function runConversationClaude(apiKey, signal, url = "https://api.anthropi
               }
             } else if (data.delta.type === "input_json_delta") {
               currentToolInput += data.delta.partial_json;
+            } else if (data.delta.type === "thinking_delta") {
+              const b = contentBlocks[contentBlocks.length - 1];
+              if (b?.type === "thinking") b.thinking += data.delta.thinking;
+            } else if (data.delta.type === "signature_delta") {
+              const b = contentBlocks[contentBlocks.length - 1];
+              if (b?.type === "thinking") b.signature += data.delta.signature;
             }
             break;
           }
