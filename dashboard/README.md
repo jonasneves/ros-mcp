@@ -6,7 +6,7 @@ A static browser app for monitoring and controlling a ROS 2 robot. No Python ser
 
 - Connects to rosbridge via WebSocket (roslibjs)
 - Browses topics, nodes, and services; subscribes, publishes, calls services
-- **AI chat panel** — ask an AI to inspect or control the robot using the same 13 ROS tools, powered by Claude or GitHub Models via their APIs
+- **AI chat panel** — ask an agent to inspect or control the robot using the same 13 ROS tools. The agent runs on your own machine ([termd](https://jonasneves.com/termd/)) and calls back into the page for each tool
 - **WebMCP registration** (optional) — exposes those same tools to native browser AI agents via `navigator.modelContext.registerTool`
 
 ## How the tools work
@@ -16,9 +16,10 @@ The same 13 ROS tools are shared by both paths:
 ```
 TOOLS[]  (name + description + handler)
   │
-  ├── AI chat panel  — you call Claude/GitHub Models API directly with your key;
-  │                    the page's agentic loop executes tool.handler() in JS.
-  │                    Works in any browser, no flags needed.
+  ├── AI chat panel  — termd runs the agent loop on your machine and calls back
+  │                    into the page, which executes tool.handler() in JS and
+  │                    returns the result. No API key: the daemon holds whatever
+  │                    auth the model needs. Works in any browser, no flags.
   │
   └── WebMCP registration — registers tools with the browser's AI context so
                             external agents (e.g. a Claude browser integration)
@@ -42,8 +43,16 @@ The **WebMCP badge** at the bottom of the sidebar is always clickable — it exp
   ```
 
 **For AI chat:**
-- Claude: an [Anthropic API key](https://console.anthropic.com)
-- GitHub Models: a GitHub account (OAuth login built in)
+- [termd](https://jonasneves.com/termd/) and its bridge extension. termd is a
+  daemon that runs a coding agent on your own machine and lends it out over
+  HTTP — so the model runs locally, nothing here holds an API key, and no key is
+  typed into the page.
+
+  termd ships no CORS headers on purpose — it has no authentication, and anything
+  reaching its port gets a shell, so the same-origin policy is the only gate. The
+  bridge extension runs on its own origin, where `host_permissions` exempt it from
+  CORS and mixed content, and relays. Without it the dashboard says so and links
+  the install rather than offering a Send button that does nothing.
 
 **For WebMCP tool registration (optional):**
 - Chrome 146+ Canary
@@ -54,7 +63,7 @@ The **WebMCP badge** at the bottom of the sidebar is always clickable — it exp
 1. Serve the directory and open `http://localhost:8080`
 2. Enter the rosbridge URL and click **Connect**
 3. Browse topics, nodes, and services in the left panel
-4. Click **AI Chat** in the topbar — select a model, authenticate, and ask anything about your robot
+4. Click **AI Chat** in the topbar — pick which model the daemon should run, and ask anything about your robot
 
 ## Tools
 

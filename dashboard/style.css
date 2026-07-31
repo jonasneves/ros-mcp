@@ -376,17 +376,6 @@ button.status-row:hover {
   color: var(--text-muted);
 }
 
-.settings-auth-row {
-  display: flex;
-  gap: 6px;
-}
-
-.settings-notice {
-  padding: 8px 14px;
-  border-top: 1px solid #fde68a;
-  border-bottom: none;
-}
-
 /* ── Theme segmented control ── */
 
 .theme-toggle {
@@ -1577,56 +1566,6 @@ button.status-row:hover {
   outline-offset: 2px;
 }
 
-.github-notice {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 6px 12px;
-  font-size: 11px;
-  color: #92400e;
-  background: #fef3c7;
-  border-bottom: 1px solid #fde68a;
-  flex-shrink: 0;
-}
-
-.github-notice-dismiss {
-  flex-shrink: 0;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: #92400e;
-  font-size: 12px;
-  padding: 0;
-  opacity: 0.5;
-  line-height: 1;
-}
-
-.github-notice-dismiss:hover { opacity: 1; }
-
-.github-notice-dismiss:focus-visible {
-  outline: 2px solid #92400e;
-  outline-offset: 2px;
-}
-
-.chat-auth-input {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  padding: 4px 8px;
-  font-size: 12px;
-  font-family: var(--font-mono);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg);
-  color: var(--text);
-}
-
-.chat-auth-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 .chat-messages {
   flex: 1;
   overflow-y: auto;
@@ -2023,13 +1962,6 @@ html[data-theme="dark"] {
   background: rgba(24, 28, 25, 0.92);
 }
 
-[data-theme="dark"] .github-notice,
-[data-theme="dark"] .settings-notice {
-  color: #fbbf24;
-  background: #292109;
-  border-color: #4a3b0a;
-}
-
 [data-theme="dark"] .github-notice-dismiss { color: #fbbf24; }
 
 [data-theme="dark"] .btn-primary,
@@ -2094,3 +2026,13 @@ details[open] .joint-parent-label::before { content: "▼ "; }
 }
 .joint-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
 .joint-table td:first-child { color: var(--text); }
+
+/* Shown only when the local agent doesn't answer — the one failure an operator
+ * can hit, so it carries the install link rather than a dead Send button. */
+.settings-note {
+  margin: 8px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.settings-note a { color: var(--accent); }

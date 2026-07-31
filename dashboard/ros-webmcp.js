@@ -2,7 +2,6 @@
 // third-party URL takes the whole module down if that URL ever moves, so the
 // page renders but nothing is wired up. 2026-07-31: neevs.io was renamed to
 // neves.cloud and the old path started 404ing, killing the entire dashboard.
-const AUTH_MODULE_URL = "https://auth.neves.cloud/lib.js";
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -1947,7 +1946,6 @@ function chipList(items) {
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
 
-const LOCAL_PROXY_URL = "http://127.0.0.1:7337/v1/messages";
 
 // termd runs the agent loop on this machine and calls back here for every tool.
 // A page may not reach 127.0.0.1 itself — mixed content from https, CORS from
@@ -2035,12 +2033,15 @@ async function runConversationTermd(signal) {
   hideChatSpinner();
 }
 
+// Credentials this dashboard used to hold. Nothing reads them now, and a live
+// key sitting in origin storage with no reader is a liability, not a leftover.
+for (const k of ["webmcp-claude-key", "webmcp-gh-auth", "webmcp-github-notice-dismissed"]) {
+  localStorage.removeItem(k);
+}
+
 const chatState = {
-  provider: "anthropic",
-  model: "claude-sonnet-5",
-  claudeKey: localStorage.getItem("webmcp-claude-key") || "",
-  githubAuth: JSON.parse(localStorage.getItem("webmcp-gh-auth") || "null"), // {token, username}
-  convMsgs: [],  // raw API message history (provider-specific format)
+  model: "default",
+  convMsgs: [],  // termd owns the history; this is what the UI has shown
   abortCtrl: null,
   busy: false,
 };
@@ -2082,17 +2083,16 @@ function clearChatMessages() {
 }
 
 function initChat() {
-  // Reveal the local-agent options only if a daemon actually answers, so the
-  // menu never offers a transport that cannot work from this page.
+  // The model runs on the operator's machine, so the one thing that can be
+  // missing is the daemon. Say so and link the install rather than leaving a
+  // Send button that silently does nothing.
   checkTermd().then(up => {
-    document.querySelectorAll('#chat-model-select option[value^="termd:"]')
-      .forEach(o => { o.hidden = !up; });
+    document.body.dataset.termd = up ? "up" : "down";
+    const banner = document.getElementById("termd-status");
+    if (banner) banner.hidden = up;
   });
-  const keyInput = document.getElementById("chat-api-key");
-  keyInput.value = chatState.claudeKey;
-
   const sel = document.getElementById("chat-model-select");
-  const saved = localStorage.getItem("webmcp-chat-model") || "anthropic:claude-sonnet-5";
+  const saved = localStorage.getItem("webmcp-chat-model") || "termd:default";
   sel.value = saved;
   applyModelSelection(saved);
 
@@ -2104,12 +2104,6 @@ function initChat() {
     clearChatMessages();
   });
   updateChatModelLabel();
-
-  document.getElementById("chat-key-save").addEventListener("click", () => {
-    chatState.claudeKey = keyInput.value.trim();
-    localStorage.setItem("webmcp-claude-key", chatState.claudeKey);
-    toast("API key saved", "ok");
-  });
 
   document.getElementById("chat-send").addEventListener("click", sendChatMsg);
   document.getElementById("chat-input").addEventListener("keydown", (e) => {
@@ -2165,64 +2159,7 @@ function initChat() {
 }
 
 function applyModelSelection(value) {
-  const colonIdx = value.indexOf(":");
-  chatState.provider = value.slice(0, colonIdx);
-  chatState.model = value.slice(colonIdx + 1);
-  const isGitHub = chatState.provider === "github";
-  const isLocal  = chatState.provider === "local";
-  const isTermd  = chatState.provider === "termd";
-  document.getElementById("chat-claude-bar").style.display = (isGitHub || isLocal || isTermd) ? "none" : "";
-  document.getElementById("chat-github-bar").style.display = isGitHub ? "" : "none";
-  const noticeDismissed = !!localStorage.getItem("webmcp-github-notice-dismissed");
-  document.getElementById("github-notice").hidden = !isGitHub || noticeDismissed;
-  if (isGitHub) updateGitHubAuthBar();
-}
-
-function updateGitHubAuthBar() {
-  const bar = document.getElementById("chat-github-bar");
-  if (!bar) return;
-  bar.innerHTML = "";
-  if (chatState.githubAuth) {
-    const label = document.createElement("span");
-    label.className = "github-user-label";
-    label.textContent = `@${chatState.githubAuth.username}`;
-    const disconnectBtn = document.createElement("button");
-    disconnectBtn.className = "btn btn-sm github-disconnect-btn";
-    disconnectBtn.textContent = "Disconnect";
-    disconnectBtn.addEventListener("click", () => {
-      chatState.githubAuth = null;
-      localStorage.removeItem("webmcp-gh-auth");
-      chatState.convMsgs = [];
-      clearChatMessages();
-      updateGitHubAuthBar();
-    });
-    bar.appendChild(label);
-    bar.appendChild(disconnectBtn);
-  } else {
-    const connectBtn = document.createElement("button");
-    connectBtn.className = "btn btn-sm github-connect-btn";
-    connectBtn.textContent = "Connect GitHub";
-    connectBtn.addEventListener("click", async () => {
-      connectBtn.textContent = "Connecting…";
-      connectBtn.disabled = true;
-      try {
-        let connectGitHub;
-        try {
-          ({ connectGitHub } = await import(AUTH_MODULE_URL));
-        } catch {
-          throw new Error(`GitHub sign-in unavailable (${AUTH_MODULE_URL} unreachable). Use an API key or the local proxy instead.`);
-        }
-        chatState.githubAuth = await connectGitHub('read:user', 'ros-mcp');
-        localStorage.setItem("webmcp-gh-auth", JSON.stringify(chatState.githubAuth));
-        updateGitHubAuthBar();
-      } catch (err) {
-        if (err.message !== "OAuth flow cancelled") toast(err.message, "error");
-        connectBtn.textContent = "Connect GitHub";
-        connectBtn.disabled = false;
-      }
-    });
-    bar.appendChild(connectBtn);
-  }
+  chatState.model = value.slice(value.indexOf(":") + 1);
 }
 
 function getSystemPrompt() {
@@ -2243,17 +2180,6 @@ function getSystemPrompt() {
   if (state.selected) lines.push(`User is currently viewing ${state.selected.kind} "${state.selected.name}".`);
   lines.push("Use the provided tools to answer questions. Be concise.");
   return lines.join("\n");
-}
-
-function getClaudeTools() {
-  return getActiveTools().map(t => ({ name: t.name, description: t.description, input_schema: t.parameters }));
-}
-
-function getOpenAITools() {
-  return getActiveTools().map(t => ({
-    type: "function",
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }));
 }
 
 async function chatExecuteToolCall(name, input) {
@@ -2283,10 +2209,10 @@ async function sendChatMsg() {
   const text = input.value.trim();
   if (!text || chatState.busy) return;
 
-  const keyByProvider = { github: chatState.githubAuth?.token, local: null, anthropic: chatState.claudeKey };
-  const key = keyByProvider[chatState.provider] ?? chatState.claudeKey;
-  if (chatState.provider !== "local" && chatState.provider !== "termd" && !key) {
-    toast(chatState.provider === "github" ? "Connect GitHub above" : "Enter your Anthropic API key first", "error");
+  // No credential to check — the daemon holds whatever auth the model needs.
+  // The only thing that can be missing is the daemon.
+  if (document.body.dataset.termd !== "up") {
+    toast("Local agent not reachable — install termd (jonasneves.com/termd)", "error");
     return;
   }
 
@@ -2301,15 +2227,7 @@ async function sendChatMsg() {
   showChatSpinner();
 
   try {
-    if (chatState.provider === "github") {
-      await runConversationGitHub(key, chatState.abortCtrl.signal);
-    } else if (chatState.provider === "termd") {
-      await runConversationTermd(chatState.abortCtrl.signal);
-    } else if (chatState.provider === "local") {
-      await runConversationClaude(null, chatState.abortCtrl.signal, LOCAL_PROXY_URL);
-    } else {
-      await runConversationClaude(key, chatState.abortCtrl.signal);
-    }
+    await runConversationTermd(chatState.abortCtrl.signal);
   } catch (err) {
     if (err.name !== "AbortError") { hideChatSpinner(); appendChatMsg("error", err.message); }
   } finally {
@@ -2317,292 +2235,6 @@ async function sendChatMsg() {
     chatState.abortCtrl = null;
     document.getElementById("chat-send").disabled = false;
     document.getElementById("chat-abort").hidden = true;
-  }
-}
-
-// ── Claude conversation ───────────────────────────────────────────────────────
-
-async function runConversationClaude(apiKey, signal, url = "https://api.anthropic.com/v1/messages") {
-  while (true) {
-    let body;
-    try {
-      const headers = { "content-type": "application/json", "anthropic-version": "2023-06-01" };
-      if (apiKey) {
-        headers["x-api-key"] = apiKey;
-        headers["anthropic-dangerous-direct-browser-access"] = "true";
-      }
-      const res = await fetch(url, {
-        method: "POST",
-        signal,
-        headers,
-        body: JSON.stringify({
-          model: chatState.model,
-          // Thinking shares this budget from Sonnet 5 on, and the request is
-          // streamed, so a tight cap only truncates mid-answer.
-          max_tokens: 16000,
-          system: getSystemPrompt(),
-          messages: chatState.convMsgs,
-          tools: getClaudeTools(),
-          stream: true,
-        }),
-      });
-      if (!res.ok) {
-        const txt = await res.text();
-        throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
-      }
-      body = res.body;
-    } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", err.message);
-      return;
-    }
-
-    const contentBlocks = [];
-    let currentTextEl = null;
-    let currentTextContent = "";
-    let currentToolInput = "";
-    let currentBlockType = null;
-    let rafId = 0;
-
-    try {
-      for await (const { event, data } of parseSSEStream(body)) {
-        switch (event) {
-          case "content_block_start": {
-            const block = data.content_block;
-            currentBlockType = block.type;
-            if (block.type === "text") {
-              hideChatSpinner();
-              currentTextContent = block.text || "";
-              currentTextEl = appendChatMsg("assistant", currentTextContent);
-            } else if (block.type === "thinking") {
-              // Must go back to the same model unchanged, signature included, or
-              // the next turn of a tool-use loop is rejected. The text is empty
-              // unless summarized display is requested; the signature is the part
-              // that matters.
-              contentBlocks.push({ type: "thinking", thinking: block.thinking || "", signature: block.signature || "" });
-            } else if (block.type === "tool_use") {
-              contentBlocks.push({ type: "tool_use", id: block.id, name: block.name, input: {} });
-              currentToolInput = "";
-              appendChatToolCall(block.id, block.name);
-            }
-            break;
-          }
-          case "content_block_delta": {
-            if (data.delta.type === "text_delta") {
-              currentTextContent += data.delta.text;
-              if (currentTextEl && !rafId) {
-                rafId = requestAnimationFrame(() => {
-                  rafId = 0;
-                  if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
-                  scrollChatBottom();
-                });
-              }
-            } else if (data.delta.type === "input_json_delta") {
-              currentToolInput += data.delta.partial_json;
-            } else if (data.delta.type === "thinking_delta") {
-              const b = contentBlocks[contentBlocks.length - 1];
-              if (b?.type === "thinking") b.thinking += data.delta.thinking;
-            } else if (data.delta.type === "signature_delta") {
-              const b = contentBlocks[contentBlocks.length - 1];
-              if (b?.type === "thinking") b.signature += data.delta.signature;
-            }
-            break;
-          }
-          case "content_block_stop": {
-            if (currentBlockType === "text" && currentTextContent) {
-              if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-              if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
-              contentBlocks.push({ type: "text", text: currentTextContent });
-              currentTextEl = null;
-              currentTextContent = "";
-            } else if (currentBlockType === "tool_use") {
-              const toolBlock = contentBlocks[contentBlocks.length - 1];
-              try { toolBlock.input = currentToolInput ? JSON.parse(currentToolInput) : {}; }
-              catch { toolBlock.input = {}; }
-              currentToolInput = "";
-            }
-            currentBlockType = null;
-            break;
-          }
-        }
-      }
-    } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", "Stream error: " + err.message);
-      return;
-    }
-
-    chatState.convMsgs.push({ role: "assistant", content: contentBlocks });
-    const toolUses = contentBlocks.filter(b => b.type === "tool_use");
-    if (toolUses.length === 0) { hideChatSpinner(); return; }
-
-    const toolResults = [];
-    for (const tu of toolUses) {
-      const result = await chatExecuteToolCall(tu.name, tu.input);
-      updateChatToolCall(tu.id, result, tu.input);
-      toolResults.push({ type: "tool_result", tool_use_id: tu.id, content: JSON.stringify(result) });
-    }
-    chatState.convMsgs.push({ role: "user", content: toolResults });
-    showChatSpinner();
-  }
-}
-
-async function* parseSSEStream(body) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      let currentEvent = null;
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          currentEvent = line.slice(7).trim();
-        } else if (line.startsWith("data: ") && currentEvent) {
-          try { yield { event: currentEvent, data: JSON.parse(line.slice(6)) }; } catch {}
-          currentEvent = null;
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
-}
-
-// ── GitHub Models conversation ────────────────────────────────────────────────
-
-async function runConversationGitHub(token, signal) {
-  while (true) {
-    let body;
-    try {
-      const res = await fetch("https://models.github.ai/inference/chat/completions", {
-        method: "POST",
-        signal,
-        headers: {
-          "content-type": "application/json",
-          "authorization": `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          model: chatState.model,
-          messages: [{ role: "system", content: getSystemPrompt() }, ...chatState.convMsgs],
-          tools: getOpenAITools(),
-          tool_choice: "auto",
-          max_completion_tokens: 4096,
-          stream: true,
-        }),
-      });
-      if (!res.ok) {
-        hideChatSpinner();
-        if (res.status === 429) { appendRateLimitMsg(); return; }
-        const txt = await res.text();
-        throw new Error(`API ${res.status}: ${txt.slice(0, 200)}`);
-      }
-      body = res.body;
-    } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", err.message);
-      return;
-    }
-
-    let currentTextEl = null;
-    let currentTextContent = "";
-    let rafId = 0;
-    const tcMap = {};
-
-    try {
-      for await (const chunk of parseOpenAIStream(body)) {
-        const delta = chunk.choices?.[0]?.delta;
-        if (!delta) continue;
-
-        if (delta.content) {
-          if (!currentTextEl) {
-            hideChatSpinner();
-            currentTextContent = "";
-            currentTextEl = appendChatMsg("assistant", "");
-          }
-          currentTextContent += delta.content;
-          if (!rafId) {
-            rafId = requestAnimationFrame(() => {
-              rafId = 0;
-              if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
-              scrollChatBottom();
-            });
-          }
-        }
-
-        if (delta.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            if (!tcMap[tc.index]) tcMap[tc.index] = { id: "", name: "", arguments: "", _shown: false };
-            if (tc.id) tcMap[tc.index].id = tc.id;
-            if (tc.function?.name) tcMap[tc.index].name = tc.function.name;
-            if (tc.function?.arguments) tcMap[tc.index].arguments += tc.function.arguments;
-            if (!tcMap[tc.index]._shown && tcMap[tc.index].id && tcMap[tc.index].name) {
-              tcMap[tc.index]._shown = true;
-              appendChatToolCall(tcMap[tc.index].id, tcMap[tc.index].name);
-            }
-          }
-        }
-      }
-    } catch (err) {
-      hideChatSpinner();
-      if (err.name === "AbortError") return;
-      appendChatMsg("error", "Stream error: " + err.message);
-      return;
-    }
-
-    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-    if (currentTextEl) currentTextEl.innerHTML = renderMarkdown(currentTextContent);
-
-    const toolCalls = Object.values(tcMap);
-    const assistantMsg = { role: "assistant", content: currentTextContent || null };
-    if (toolCalls.length) {
-      assistantMsg.tool_calls = toolCalls.map(tc => ({
-        id: tc.id, type: "function",
-        function: { name: tc.name, arguments: tc.arguments },
-      }));
-    }
-    chatState.convMsgs.push(assistantMsg);
-
-    if (toolCalls.length === 0) { hideChatSpinner(); return; }
-
-    for (const tc of toolCalls) {
-      let parsedArgs;
-      try { parsedArgs = JSON.parse(tc.arguments || "{}"); } catch { parsedArgs = {}; }
-      const result = await chatExecuteToolCall(tc.name, parsedArgs);
-      updateChatToolCall(tc.id, result, parsedArgs);
-      chatState.convMsgs.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify(result) });
-    }
-    showChatSpinner();
-  }
-}
-
-async function* parseOpenAIStream(body) {
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const data = line.slice(6).trim();
-        if (data === "[DONE]") return;
-        try { yield JSON.parse(data); } catch {}
-      }
-    }
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -2620,39 +2252,6 @@ function appendChatMsg(role, text) {
   container.appendChild(el);
   scrollChatBottom();
   return el;
-}
-
-function nextGptModel() {
-  const sel = document.getElementById("chat-model-select");
-  const opts = Array.from(sel.options);
-  const current = `${chatState.provider}:${chatState.model}`;
-  const idx = opts.findIndex(o => o.value === current);
-  for (let i = idx + 1; i < opts.length; i++) {
-    if (opts[i].value.startsWith("github:openai/gpt")) return opts[i];
-  }
-  return null;
-}
-
-function appendRateLimitMsg() {
-  const next = nextGptModel();
-  const container = document.getElementById("chat-messages");
-  const el = document.createElement("div");
-  el.className = "chat-msg chat-msg-error";
-  if (next) {
-    el.innerHTML = `Rate limit reached. <a href="#" class="chat-rate-limit-link">Switch to ${escHtml(next.text)}</a>`;
-    el.querySelector("a").addEventListener("click", e => {
-      e.preventDefault();
-      const sel = document.getElementById("chat-model-select");
-      sel.value = next.value;
-      localStorage.setItem("webmcp-chat-model", next.value);
-      applyModelSelection(next.value);
-      el.remove();
-    });
-  } else {
-    el.textContent = "Rate limit reached. No fallback model available.";
-  }
-  container.appendChild(el);
-  scrollChatBottom();
 }
 
 function appendChatToolCall(toolId, toolName) {
@@ -2757,10 +2356,6 @@ function initSysFilterBtn(btnId, stateKey) {
 initSysFilterBtn("sys-filter-btn", "hideSystemServices");
 initSysFilterBtn("node-sys-filter-btn", "hideSystemNodes");
 
-document.getElementById("github-notice-dismiss").addEventListener("click", () => {
-  localStorage.setItem("webmcp-github-notice-dismissed", "1");
-  document.getElementById("github-notice").hidden = true;
-});
 
 document.getElementById("log-toggle").addEventListener("click", () => {
   const body = document.getElementById("log-body");
