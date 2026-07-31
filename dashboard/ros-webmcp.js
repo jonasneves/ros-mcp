@@ -1948,8 +1948,10 @@ function chipList(items) {
 
 
 // termd runs the agent loop on this machine and calls back here for every tool.
-// A page may not reach 127.0.0.1 itself — mixed content from https, CORS from
-// any other port — so the bridge extension relays it from its own origin.
+// A page may not reach 127.0.0.1 itself, and the reason is CORS, not mixed
+// content: loopback is potentially trustworthy, so https may reach it, but termd
+// sends no CORS headers — it has no auth, so same-origin is its only gate. The
+// bridge extension relays from its own origin, where neither rule applies.
 const TERMD_URL = "http://127.0.0.1:5000";
 const TERMD_EXTENSION_ID = "mgcgjhbjenjaboahijedcngmgigofkhh";
 
@@ -1983,13 +1985,17 @@ function termdSend(msg, onChunk) {
 
 async function checkTermd() {
   try {
-    const pong = await Promise.race([
-      termdSend({ type: "ping" }),
-      new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 600)),
+    // Ask the daemon, not the bridge: the bridge answers nothing on its own
+    // behalf, so this stays false when termd is down but the extension is in.
+    const res = await Promise.race([
+      termdSend({ path: "/health", method: "GET" }),
+      new Promise((_, r) => setTimeout(() => r(new Error("timeout")), 1500)),
     ]);
-    if (pong?.type === "pong") return true;
+    if (res?.type === "done") return true;
   } catch {}
-  if (location.protocol === "https:") return false;   // direct probe cannot succeed
+  // Direct works only if the daemon serves this page; any other origin is
+  // cross-origin and gets no CORS headers back.
+  if (location.origin !== new URL(TERMD_URL).origin) return false;
   try { return (await fetch(`${TERMD_URL}/health`, { signal: AbortSignal.timeout(800) })).ok; }
   catch { return false; }
 }
@@ -2020,7 +2026,7 @@ async function runConversationTermd(signal) {
         appendChatToolCall(e.requestId, e.name);
         const result = await chatExecuteToolCall(e.name, e.input || {});
         updateChatToolCall(e.requestId, result, e.input || {});
-        await termdSend({ type: "request", path: `/agent/tool/${encodeURIComponent(e.token)}`,
+        await termdSend({ path: `/agent/tool/${encodeURIComponent(e.token)}`,
                           body: result?.error ? { error: result.error } : { content: result } });
         showChatSpinner();
       } else if (e.type === "result" && e.isError) {
@@ -2028,7 +2034,7 @@ async function runConversationTermd(signal) {
       }
     }
   };
-  await termdSend({ type: "request", path: "/agent/stream",
+  await termdSend({ path: "/agent/stream",
                     body: { prompt, tools, maxTurns: 24, ...(model ? { model } : {}) } }, onChunk);
   hideChatSpinner();
 }
