@@ -1,9 +1,5 @@
 # ROS MCP Server
 
-## Domain lens
-
-- `ros` — fires for ROS 2 nodes, topics, TF, URDF code in this repo.
-
 ## Commands
 
 - Run server: `uv run server.py`
