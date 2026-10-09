@@ -85,6 +85,9 @@ Full signatures, units, and examples: [docs/tools.md](docs/tools.md).
 | `ROSBRIDGE_IP` | `127.0.0.1` | rosbridge host |
 | `ROSBRIDGE_PORT` | `9090` | rosbridge port |
 | `ROS_DEFAULT_TIMEOUT` | `5.0` | Tool timeout in seconds |
+| `ROS_MCP_RELAY_ALLOW` | — | GitHub logins, comma-separated, that may use `--transport relay`; required by it |
+
+`--transport relay` (`make server-relay`) reaches this server from claude.ai, Cursor or VS Code through the [MCP relay](https://github.com/jonasneves/mcp-relay), with no public host or tunnel, and prints the address to add. The tools move a robot, so the relay answers only a caller signed in with GitHub as one of `ROS_MCP_RELAY_ALLOW`. The host's key is `~/.config/ros-mcp/relay.key`; delete it to rotate.
 
 ## License
 

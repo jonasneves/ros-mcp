@@ -3,7 +3,7 @@
 COMPOSE := docker compose -f docker/docker-compose.yml
 COMPOSE_ISAAC := docker compose -f docker/docker-compose.isaac-sim.yml
 
-.PHONY: help server server-http proxy turtlesim robots esp32 isaac-sim configure configure-desktop configure-remote deploy-webmcp status-webmcp
+.PHONY: help server server-http server-relay proxy turtlesim robots esp32 isaac-sim configure configure-desktop configure-remote deploy-webmcp status-webmcp
 
 help:
 	@echo ""
@@ -33,6 +33,9 @@ server:
 
 server-http:
 	uv run server.py --transport streamable-http --host 0.0.0.0 --port 9000
+
+server-relay:
+	uv run server.py --transport relay
 
 proxy:
 	@printf "\n\033[1;36m  Claude proxy: http://127.0.0.1:7337\033[0m\n\n"

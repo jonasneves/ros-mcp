@@ -17,6 +17,7 @@ dependencies = [
     "opencv-python>=4.11.0.86",
     "pillow>=11.3.0",
     "websocket-client>=1.8.0",
+    "websockets>=12",  # --transport relay
 ]
 
 [project.optional-dependencies]

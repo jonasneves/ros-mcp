@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from pathlib import Path
 
 import uvicorn
 from fastmcp import FastMCP
@@ -36,9 +37,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--transport",
-        choices=["stdio", "http", "streamable-http"],
+        choices=["stdio", "http", "streamable-http", "relay"],
         default="stdio",
-        help="MCP transport protocol to use (default: stdio)",
+        help="MCP transport protocol to use (default: stdio). relay: reach this server from "
+        "claude.ai, Cursor or VS Code through relay.neves.cloud, behind GitHub sign-in "
+        "(needs ROS_MCP_RELAY_ALLOW)",
     )
     parser.add_argument(
         "--host", default="127.0.0.1", help="Host for HTTP transports (default: 127.0.0.1)"
@@ -49,6 +52,31 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+RELAY_KEY = Path.home() / ".config" / "ros-mcp" / "relay.key"
+
+
+def relay_allow(env=os.environ) -> list:
+    return [s.strip() for s in env.get("ROS_MCP_RELAY_ALLOW", "").split(",") if s.strip()]
+
+
+def _serve_relay(mcp: FastMCP) -> None:
+    """The same tools through the MCP relay (github.com/jonasneves/mcp-relay). They move a
+    robot, so this refuses to start unless ROS_MCP_RELAY_ALLOW names the GitHub logins that
+    may sign in; the relay answers no one else."""
+    import asyncio
+
+    from ros_mcp.utils.relay_client import load_or_create_key, mcp_url, serve_mcp
+
+    allow = relay_allow()
+    if not allow:
+        sys.exit("ros-mcp --transport relay: set ROS_MCP_RELAY_ALLOW=<your-github-login>. The relay "
+                 "answers only a caller signed in with GitHub as one of those accounts.")
+    key = load_or_create_key(RELAY_KEY)
+    print(f"Transport: relay -> {mcp_url(key, signed=True)}  (sign-in as {', '.join(allow)})", file=sys.stderr, flush=True)
+    asyncio.run(serve_mcp(mcp, key=key, allow=allow, name="ros-mcp",
+                          offline="ros-mcp is not reachable: `ros-mcp --transport relay` is not running next to rosbridge."))
+
+
 def main() -> None:
     args = _build_arg_parser().parse_args()
 
@@ -57,6 +85,10 @@ def main() -> None:
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")
+        return
+
+    if args.transport == "relay":
+        _serve_relay(mcp)
         return
 
     print(f"Transport: {args.transport} -> http://{args.host}:{args.port}", file=sys.stderr)

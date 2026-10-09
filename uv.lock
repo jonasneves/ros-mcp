@@ -1490,6 +1490,7 @@ dependencies = [
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "websocket-client" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -1506,6 +1507,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "websocket-client", specifier = ">=1.8.0" },
+    { name = "websockets", specifier = ">=12" },
 ]
 provides-extras = ["dev"]
 
