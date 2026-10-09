@@ -40,7 +40,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["stdio", "http", "streamable-http", "relay"],
         default="stdio",
         help="MCP transport protocol to use (default: stdio). relay: reach this server from "
-        "claude.ai, Cursor or VS Code through relay.neves.cloud, behind GitHub sign-in "
+        "claude.ai, Cursor or VS Code through relay.kandue.app, behind GitHub sign-in "
         "(needs ROS_MCP_RELAY_ALLOW)",
     )
     parser.add_argument(

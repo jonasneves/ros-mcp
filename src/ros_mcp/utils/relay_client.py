@@ -1,4 +1,4 @@
-"""Python client for the MCP relay (https://relay.neves.cloud); the counterpart of relay-client.js.
+"""Python client for the MCP relay (https://relay.kandue.app); the counterpart of relay-client.js.
 
 Copy this file into an app the internet cannot reach. Two ways in:
 
@@ -23,7 +23,7 @@ import secrets
 import sys
 from typing import Any, Awaitable, Callable, Optional
 
-RELAY = "https://relay.neves.cloud"
+RELAY = "https://relay.kandue.app"
 PING_S = 20
 MAX_BACKOFF_S = 30
 
