@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- The green turtle from dashboard/logo.jpg (ROS's turtle mascot), redrawn flat so it holds at 16px. -->
+  <rect x="1" y="1" width="126" height="126" rx="28" fill="#122319"/>
+  <g fill="#6cc04a">
+    <path d="M14 82 L26 76 L28 86 Z"/>
+    <rect x="28" y="82" width="16" height="22" rx="6"/>
+    <rect x="70" y="82" width="16" height="22" rx="6"/>
+    <path d="M86 80 C90 66 92 56 100 50 L112 50 C120 54 118 70 106 72 L96 86 Z"/>
+    <path d="M18 80 A40 40 0 0 1 98 80 Z"/>
+  </g>
+  <path fill="#3f8a2c" d="M34 78 A24 24 0 0 1 82 78 Z"/>
+  <rect x="14" y="76" width="88" height="11" rx="5.5" fill="#3f8a2c"/>
+  <circle cx="108" cy="59" r="4.5" fill="#122319"/>
+</svg>
