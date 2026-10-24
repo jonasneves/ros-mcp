@@ -70,9 +70,9 @@ Mismatched QoS between pub and sub = silent connection failure (no error/warning
 Hardcoded topic names break node reuse and multi-robot deployments. Remap/namespace at launch, not in code.
 
 ```python
-self.create_publisher(Twist, '/cmd_vel', 10)   # Bad — hardcoded, breaks under namespacing
-self.create_publisher(Twist, 'cmd_vel', 10)     # Good — relative, inherits namespace
-self.create_publisher(Twist, '~/cmd_vel', 10)   # Good — private, scoped to node
+self.create_publisher(Twist, "/cmd_vel", 10)  # Bad — hardcoded, breaks under namespacing
+self.create_publisher(Twist, "cmd_vel", 10)  # Good — relative, inherits namespace
+self.create_publisher(Twist, "~/cmd_vel", 10)  # Good — private, scoped to node
 ```
 
 ## Common silent failures

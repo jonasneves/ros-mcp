@@ -44,6 +44,9 @@ packages = ["ros_mcp", "ros_mcp.tools", "ros_mcp.utils"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# A verbatim copy of the MCP relay's Python client (relay.site-mcp.com), replaced whole on update:
+# reformatting it here would turn each update into a formatting diff.
+extend-exclude = ["src/ros_mcp/utils/relay_client.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]

@@ -69,12 +69,25 @@ def _serve_relay(mcp: FastMCP) -> None:
 
     allow = relay_allow()
     if not allow:
-        sys.exit("ros-mcp --transport relay: set ROS_MCP_RELAY_ALLOW=<your-github-login>. The relay "
-                 "answers only a caller signed in with GitHub as one of those accounts.")
+        sys.exit(
+            "ros-mcp --transport relay: set ROS_MCP_RELAY_ALLOW=<your-github-login>. The relay "
+            "answers only a caller signed in with GitHub as one of those accounts."
+        )
     key = load_or_create_key(RELAY_KEY)
-    print(f"Transport: relay -> {mcp_url(key, signed=True)}  (sign-in as {', '.join(allow)})", file=sys.stderr, flush=True)
-    asyncio.run(serve_mcp(mcp, key=key, allow=allow, name="ros-mcp",
-                          offline="ros-mcp is not reachable: `ros-mcp --transport relay` is not running next to rosbridge."))
+    print(
+        f"Transport: relay -> {mcp_url(key, signed=True)}  (sign-in as {', '.join(allow)})",
+        file=sys.stderr,
+        flush=True,
+    )
+    asyncio.run(
+        serve_mcp(
+            mcp,
+            key=key,
+            allow=allow,
+            name="ros-mcp",
+            offline="ros-mcp is not reachable: `ros-mcp --transport relay` is not running next to rosbridge.",
+        )
+    )
 
 
 def main() -> None:

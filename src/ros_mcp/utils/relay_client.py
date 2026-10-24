@@ -281,7 +281,9 @@ class _Bridge:
             return None
         if method is None:
             return None
-        ok = lambda result: {"jsonrpc": "2.0", "id": mid, "result": result}
+        def ok(result):
+            return {"jsonrpc": "2.0", "id": mid, "result": result}
+
         # The 2026-07-28 revision (stateless, version in _meta) is not one this server speaks:
         # refused as the spec says, so the client falls back to initialize.
         requested = (params or {}).get("_meta", {}).get("io.modelcontextprotocol/protocolVersion") if isinstance(params, dict) else None
